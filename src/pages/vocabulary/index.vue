@@ -3,6 +3,8 @@
 import vocabulary from './vocabulary'
 
 const CHAPTER_KEY = 'vocabulary_chapter'
+const PROGRESS_KEY = 'vocabulary_progress'
+const MASTERY_COUNT = 10 // 正确10次后隐藏
 
 const isTrainingModel = ref(false)
 const isShowMeaning = ref(true)
@@ -10,6 +12,11 @@ const isAutoPlayWordAudio = ref(true)
 const isOnlyShowErrors = ref(false)
 const isFinishTraining = ref(false)
 const isShowSource = ref(false)
+const isHideMastered = ref(false)
+const isShuffleMode = ref(false)
+const isShowAddWordDialog = ref(false)
+const currentPage = ref(1)
+const wordsPerPage = ref(Math.max(1, Number.parseInt(localStorage.getItem('vocabulary_words_per_page') || '5', 10))) // 每页显示组数，默认5组
 
 const trainingStats = ref('')
 const keyword = ref('')
@@ -18,6 +25,34 @@ const category = ref(localStorage.getItem(CHAPTER_KEY) || chapters[0])
 
 const loaded = ref(false)
 const refVocabulary = reactive(vocabulary)
+
+// 分页计算属性
+const currentWordGroups = computed(() => {
+  const groups = refVocabulary[category.value]?.words || []
+  const start = (currentPage.value - 1) * wordsPerPage.value
+  const end = start + wordsPerPage.value
+  let pageGroups = groups.slice(start, end)
+
+  // 如果开启打乱模式，打乱每组内部的单词顺序
+  if (isShuffleMode.value) {
+    pageGroups = pageGroups.map((group) => {
+      const shuffledWords = [...group]
+      for (let i = shuffledWords.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1))
+        ;[shuffledWords[i], shuffledWords[j]] = [shuffledWords[j], shuffledWords[i]]
+      }
+      return shuffledWords
+    })
+  }
+
+  return pageGroups
+})
+
+const totalPages = computed(() => {
+  const groups = refVocabulary[category.value]?.words || []
+  return Math.ceil(groups.length / wordsPerPage.value)
+})
+
 const wordList = computed(() => {
   const result = structuredClone(vocabulary) // deep clone
   // const keywordValue = keyword.value.trim().toLowerCase()
@@ -51,30 +86,107 @@ watch(category, (newVal, oldVal) => {
   localStorage.setItem(CHAPTER_KEY, newVal)
 })
 
+// 保存练习进度
+function saveProgress() {
+  if (!isTrainingModel.value)
+    return
+
+  const progress = {
+    chapter: category.value,
+    words: {},
+  }
+
+  // 只保存练习状态
+  const words = refVocabulary[category.value].words
+  for (const group of words) {
+    for (const item of group) {
+      if (item.spellValue !== undefined || item.spellError !== undefined || item.correctCount !== undefined || item.errorCount !== undefined) {
+        progress.words[item.id] = {
+          spellValue: item.spellValue || '',
+          spellError: item.spellError || false,
+          correctCount: item.correctCount || 0,
+          errorCount: item.errorCount || 0,
+        }
+      }
+    }
+  }
+
+  localStorage.setItem(PROGRESS_KEY, JSON.stringify(progress))
+}
+
+// 加载练习进度
+function loadProgress() {
+  const savedProgress = localStorage.getItem(PROGRESS_KEY)
+  if (!savedProgress)
+    return
+
+  try {
+    const progress = JSON.parse(savedProgress)
+    if (progress.chapter !== category.value)
+      return
+
+    const words = refVocabulary[category.value].words
+    for (const group of words) {
+      for (const item of group) {
+        const saved = progress.words[item.id]
+        if (saved) {
+          item.spellValue = saved.spellValue
+          item.spellError = saved.spellError
+          item.correctCount = saved.correctCount || 0
+          item.errorCount = saved.errorCount || 0
+        }
+      }
+    }
+
+    trainingStats.value = calcStats()
+  }
+  catch (error) {
+    console.error('加载进度失败:', error)
+  }
+}
+
 function calcStats() {
   let error = 0
   let missing = 0
   let correct = 0
+  let mastered = 0
+  let totalCorrectCount = 0
+  let totalErrorCount = 0
+
   if (isTrainingModel.value) {
     const cur = refVocabulary[category.value]
     // 遍历所有单词的属性
     for (const group of cur.words) {
       for (const item of group) {
+        // 统计正确和错误次数
+        totalCorrectCount += item.correctCount || 0
+        totalErrorCount += item.errorCount || 0
+
         if (item.spellValue) {
-          if (item.spellError)
-            error++
-          else
+          // eslint-disable-next-line max-statements-per-line
+          if (item.spellError) { error++ }
+          else {
             correct++
+            if ((item.correctCount || 0) >= MASTERY_COUNT) {
+              mastered++
+            }
+          }
         }
         else { missing++ }
       }
     }
   }
-  return `${missing} 个未完成，${correct} 个正确，${error} 个错误`
+  return `${missing} 个未完成，${correct} 个正确，${error} 个错误，${mastered} 个已掌握 | 正确：${totalCorrectCount} 次，错误：${totalErrorCount} 次`
 }
 
 onMounted(() => {
   loaded.value = true
+
+  // 初始化自添加生词
+  initCustomWords()
+
+  // 加载练习进度
+  loadProgress()
 
   // 只能同时播放一个音频
   const audioTags = document.getElementsByTagName('audio')
@@ -140,8 +252,12 @@ function copyText(item) {
 function onInputKeydown(e) {
   e.stopPropagation()
   const { key, target } = e
-  // console.log(key, target.id)
   if (key === 'Enter') {
+    // 触发验证（获取对应的item）
+    const item = findItemById(target.id)
+    if (item)
+      validateInput(target, item)
+
     // 切换到下一个 input
     document.getElementById((Number(target.id) + 1).toString())?.focus()
   }
@@ -157,13 +273,20 @@ function onInputFoucsOut(e, item) {
   const spellValue = target.value.toLowerCase().trim()
   if (spellValue.length < 1) {
     item.spellValue = ''
-    item.spellError = false
   }
   else {
+    const isCorrect = item.word.map(v => v.toLowerCase().trim()).includes(spellValue)
     item.spellValue = spellValue
-    item.spellError = !item.word.map(v => v.toLowerCase().trim()).includes(spellValue)
+    item.spellError = !isCorrect
+
+    // 如果答对了，增加正确计数；如果答错了，增加错误计数
+    if (isCorrect && !item.spellError)
+      item.correctCount = (item.correctCount || 0) + 1
+    else if (!isCorrect && item.spellError)
+      item.errorCount = (item.errorCount || 0) + 1
   }
   trainingStats.value = calcStats()
+  saveProgress() // 保存进度
 }
 
 function getInputStyleClass(item) {
@@ -172,13 +295,51 @@ function getInputStyleClass(item) {
     normal: 'ml-4 inline-block border border-gray-300 rounded-lg bg-gray-50 p-2.5 text-sm text-gray-900 dark:border-gray-600 focus:border-blue-500 dark:bg-gray-700 dark:text-white focus:ring-blue-500 dark:focus:border-blue-500 dark:focus:ring-blue-500 dark:placeholder-gray-400',
     success: 'ml-4 bg-green-50 border border-green-500 text-green-900 dark:text-green-400 placeholder-green-700 dark:placeholder-green-500 text-sm rounded-lg focus:ring-green-500 focus:border-green-500 inline-block p-2.5 dark:bg-gray-700 dark:border-green-500',
   }
+  // 在练习模式下，实时显示验证结果
+  if (isTrainingModel.value) {
+    if (item.spellError)
+      return cls.error
+    if (item.spellValue && item.spellValue.length > 0 && !item.spellError)
+      return cls.success
+  }
+  // 完成练习后也显示结果
   if (isFinishTraining.value) {
     if (item.spellError)
       return cls.error
-    if (item.spellValue.length > 0 && !item.spellError)
+    if (item.spellValue && item.spellValue.length > 0 && !item.spellError)
       return cls.success
   }
   return cls.normal
+}
+
+function findItemById(id) {
+  const words = refVocabulary[category.value].words
+  for (const group of words) {
+    for (const item of group) {
+      if (item.id === id)
+        return item
+    }
+  }
+  return null
+}
+
+function validateInput(target, item) {
+  const spellValue = target.value.toLowerCase().trim()
+  if (spellValue.length < 1) {
+    item.spellValue = ''
+    item.spellError = false
+  }
+  else {
+    const isCorrect = item.word.map(v => v.toLowerCase().trim()).includes(spellValue)
+    item.spellValue = spellValue
+    item.spellError = !isCorrect
+
+    // 如果答对了，增加正确计数
+    if (isCorrect && !item.spellError)
+      item.correctCount = (item.correctCount || 0) + 1
+  }
+  trainingStats.value = calcStats()
+  saveProgress() // 保存进度
 }
 
 function copyAllError() {
@@ -192,6 +353,349 @@ function copyAllError() {
   }
   navigator.clipboard.writeText(errorWords.join('\n\n'))
 }
+
+function shouldShowWord(item) {
+  // 非练习模式：显示所有单词
+  if (!isTrainingModel.value)
+    return true
+
+  // 练习模式下的过滤逻辑
+  if (isOnlyShowErrors.value && !item.spellError)
+    return false
+
+  // 隐藏已掌握的单词（正确10次以上）
+  if (isHideMastered.value && (item.correctCount || 0) >= MASTERY_COUNT)
+    return false
+
+  return true
+}
+
+function removeSingleWord(item) {
+  if (!confirm(`确定要剔除单词"${item.word[0]}"吗？此操作不可恢复。`))
+    return
+
+  const words = refVocabulary[category.value].words
+
+  // 查找并删除单词
+  for (const group of words) {
+    const index = group.findIndex(w => w.id === item.id)
+    if (index > -1) {
+      group.splice(index, 1)
+      break
+    }
+  }
+
+  // 更新章节统计
+  const chapter = refVocabulary[category.value]
+  chapter.groupCount = words.length
+  chapter.wordCount = words.reduce((sum, group) => sum + group.length, 0)
+
+  // 保存自添加生词章节的特殊处理
+  if (category.value === '23 - 自添加生词')
+    saveCustomWords()
+
+  // 保存练习进度
+  saveProgress()
+
+  // 重新计算统计
+  trainingStats.value = calcStats()
+
+  // 如果这个组空了，且在只显示错误模式，可能需要关闭该模式
+  if (words.some(group => group.length === 0)) {
+    const hasAnyErrors = words.some(group =>
+      group.some(item => item.spellError),
+    )
+    if (!hasAnyErrors)
+      isOnlyShowErrors.value = false
+  }
+
+  alert(`已成功剔除单词"${item.word[0]}"`)
+}
+
+function removeErrorWords() {
+  const confirmMessage = `确定要剔除当前章节的所有错词吗？
+这些单词将被永久移除，此操作不可恢复。`
+  if (!confirm(confirmMessage))
+    return
+
+  const words = refVocabulary[category.value].words
+  const wordsToRemove = []
+
+  // 收集所有错词
+  for (const group of words) {
+    for (const item of group) {
+      if (item.spellError)
+        wordsToRemove.push({ group, item })
+    }
+  }
+
+  if (wordsToRemove.length === 0) {
+    alert('当前没有错词需要剔除')
+    return
+  }
+
+  // 从数组中移除错词
+  for (const { group, item } of wordsToRemove) {
+    const index = group.findIndex(w => w.id === item.id)
+    if (index > -1)
+      group.splice(index, 1)
+  }
+
+  // 更新章节统计
+  const chapter = refVocabulary[category.value]
+  chapter.groupCount = words.length
+  chapter.wordCount = words.reduce((sum, group) => sum + group.length, 0)
+
+  // 保存自添加生词章节的特殊处理
+  if (category.value === '23 - 自添加生词')
+    saveCustomWords()
+
+  // 保存练习进度
+  saveProgress()
+
+  // 重新计算统计
+  trainingStats.value = calcStats()
+
+  // 关闭只显示错误模式
+  isOnlyShowErrors.value = false
+
+  alert(`已成功剔除 ${wordsToRemove.length} 个错词`)
+}
+
+function clearProgress() {
+  // 清除当前章节的练习状态
+  const words = refVocabulary[category.value].words
+  for (const group of words) {
+    for (const item of group) {
+      item.spellValue = ''
+      item.spellError = false
+      item.correctCount = 0
+      item.errorCount = 0
+    }
+  }
+
+  // 清除本地存储
+  localStorage.removeItem(PROGRESS_KEY)
+  trainingStats.value = calcStats()
+}
+
+function goToPage(page) {
+  if (page >= 1 && page <= totalPages.value)
+    currentPage.value = page
+}
+
+function shuffleCurrentPage() {
+  // 强制重新计算 currentWordGroups
+  // eslint-disable-next-line no-unused-expressions
+  currentWordGroups.value
+}
+
+function nextPage() {
+  // eslint-disable-next-line curly
+  if (currentPage.value < totalPages.value) {
+    currentPage.value++
+  }
+}
+
+function prevPage() {
+  // eslint-disable-next-line curly
+  if (currentPage.value > 1) {
+    currentPage.value--
+  }
+}
+
+function getVisiblePages() {
+  const pages = []
+  const total = totalPages.value
+  const current = currentPage.value
+
+  if (total <= 7) {
+    // 如果总页数少于等于7，显示所有页码
+    for (let i = 1; i <= total; i++)
+      pages.push(i)
+  }
+  else {
+    // 显示当前页附近的页码
+    if (current <= 3) {
+      // 前3页的情况
+      for (let i = 1; i <= 4; i++)
+        pages.push(i)
+
+      pages.push('...')
+      pages.push(total)
+    }
+    else if (current >= total - 2) {
+      // 最后3页的情况
+      pages.push(1)
+      pages.push('...')
+      for (let i = total - 3; i <= total; i++)
+        pages.push(i)
+    }
+    else {
+      // 中间页的情况
+      pages.push(1)
+      pages.push('...')
+      for (let i = current - 1; i <= current + 1; i++)
+        pages.push(i)
+
+      pages.push('...')
+      pages.push(total)
+    }
+  }
+
+  return pages
+}
+
+// 监听每页组数变化，保存到本地存储并重置页码
+watch(wordsPerPage, (newValue) => {
+  localStorage.setItem('vocabulary_words_per_page', newValue.toString())
+  currentPage.value = 1 // 重置到第一页
+})
+
+// 监听每页组数变化，保存到本地存储并重置页码
+watch(wordsPerPage, (newValue) => {
+  localStorage.setItem('vocabulary_words_per_page', newValue.toString())
+  currentPage.value = 1 // 重置到第一页
+})
+
+// 初始化自添加生词章节
+const CUSTOM_WORDS_KEY = 'vocabulary_custom_words'
+function initCustomWords() {
+  const customWords = localStorage.getItem(CUSTOM_WORDS_KEY)
+  const defaultCustomWords = {
+    groupCount: 0,
+    wordCount: 0,
+    audio: '',
+    words: [],
+  }
+
+  if (customWords) {
+    try {
+      const parsed = JSON.parse(customWords)
+      refVocabulary['23 - 自添加生词'] = {
+        ...defaultCustomWords,
+        ...parsed,
+        groupCount: parsed.groupCount || 0,
+        wordCount: parsed.wordCount || 0,
+        words: parsed.words || [],
+      }
+    }
+    catch (error) {
+      console.error('加载自添加生词失败:', error)
+      refVocabulary['23 - 自添加生词'] = defaultCustomWords
+    }
+  }
+  else {
+    refVocabulary['23 - 自添加生词'] = defaultCustomWords
+  }
+}
+
+// 保存自添加生词
+function saveCustomWords() {
+  localStorage.setItem(CUSTOM_WORDS_KEY, JSON.stringify(refVocabulary['23 - 自添加生词']))
+}
+
+// 新添加单词的临时数据
+const newWord = ref({
+  word: '',
+  pos: 'n.',
+  meaning: '',
+  example: '',
+})
+
+// 添加新单词
+function addNewWord() {
+  if (!newWord.value.word.trim() || !newWord.value.meaning.trim()) {
+    alert('请填写单词和中文释义')
+    return
+  }
+
+  const customWords = refVocabulary['23 - 自添加生词']
+  if (!customWords)
+    return
+
+  const words = newWord.value.word.split(',').map(w => w.trim()).filter(w => w)
+
+  if (words.length === 0)
+    return
+
+  // 创建新组或添加到现有组
+  const groupName = `自定义组 ${(customWords.words?.length || 0) + 1}`
+  const newGroup = words.map((word, index) => ({
+    id: `custom_${Date.now()}_${index}`,
+    word: [word],
+    pos: newWord.value.pos || 'n.',
+    meaning: newWord.value.meaning,
+    example: newWord.value.example || '',
+    extra: '',
+    label: groupName,
+  }))
+
+  customWords.words = customWords.words || []
+  customWords.words.push(newGroup)
+  customWords.groupCount = customWords.words.length
+  customWords.wordCount = customWords.words.reduce((sum, group) => sum + group.length, 0)
+
+  // 重置表单
+  newWord.value = {
+    word: '',
+    pos: 'n.',
+    meaning: '',
+    example: '',
+  }
+
+  saveCustomWords()
+}
+
+// 删除单词
+function removeWord(groupIndex, wordIndex) {
+  const customWords = refVocabulary['23 - 自添加生词']
+  if (!customWords?.words?.[groupIndex])
+    return
+
+  customWords.words[groupIndex].splice(wordIndex, 1)
+
+  // 如果组为空，删除整个组
+  if (customWords.words[groupIndex].length === 0)
+    customWords.words.splice(groupIndex, 1)
+
+  customWords.groupCount = customWords.words.length
+  customWords.wordCount = customWords.words.reduce((sum, group) => sum + group.length, 0)
+
+  saveCustomWords()
+}
+
+// 删除整组
+function removeGroup(groupIndex) {
+  const customWords = refVocabulary['23 - 自添加生词']
+  if (!customWords?.words)
+    return
+
+  customWords.words.splice(groupIndex, 1)
+
+  customWords.groupCount = customWords.words.length
+  customWords.wordCount = customWords.words.reduce((sum, group) => sum + group.length, 0)
+
+  saveCustomWords()
+}
+
+// 清空所有自定义单词
+function clearCustomWords() {
+  if (confirm('确定要清空所有自添加的生词吗？此操作不可恢复。')) {
+    refVocabulary['23 - 自添加生词'] = {
+      groupCount: 0,
+      wordCount: 0,
+      audio: '',
+      words: [],
+    }
+    saveCustomWords()
+  }
+}
+
+// 切换章节时重置页码
+watch(category, () => {
+  currentPage.value = 1
+})
 </script>
 
 <template>
@@ -218,47 +722,96 @@ function copyAllError() {
                 {{ k }}
               </option>
             </select>
-            <!-- <input type="text" name="email" class="ml-3 block w-full border border-gray-300 rounded-lg bg-gray-50 p-2.5 text-gray-900 dark:border-gray-600 focus:border-primary-500 dark:bg-gray-700 sm:text-sm dark:text-white focus:ring-primary-500 dark:focus:border-primary-500 dark:focus:ring-primary-500 dark:placeholder-gray-400" placeholder="关键词"> -->
-            <!-- <div class="relative ml-2 flex-1">
-              <div class="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3">
-                <svg class="h-4 w-4 text-gray-500 dark:text-gray-400" aria-hidden="true"
-                  xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 20 20">
-                  <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                    d="m19 19-4-4m0-7A7 7 0 1 1 1 8a7 7 0 0 1 14 0Z" />
-                </svg>
-              </div>
-              <input v-model="keyword" type="search"
-                class="block w-full border border-gray-300 rounded-lg bg-gray-50 p-2.5 pl-10 text-sm text-gray-900 dark:border-gray-600 focus:border-blue-500 dark:bg-gray-700 dark:text-white focus:ring-blue-500 dark:focus:border-blue-500 dark:focus:ring-blue-500 dark:placeholder-gray-400"
-                placeholder="Search">
-            </div> -->
+            <button
+              type="button"
+              class="ml-2 rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-medium text-white dark:bg-indigo-500 hover:bg-indigo-700 focus:outline-none focus:ring-4 focus:ring-indigo-300 dark:hover:bg-indigo-600 dark:focus:ring-indigo-800"
+              @click="isShowAddWordDialog = true"
+            >
+              📝 添加生词
+            </button>
             <label class="ml-2 inline-flex cursor-pointer items-center">
               <input v-model="isTrainingModel" type="checkbox" class="peer sr-only">
               <div
                 class="peer relative h-6 w-11 rounded-full bg-gray-200 after:absolute after:start-[2px] after:top-[2px] after:h-5 after:w-5 after:border after:border-gray-300 dark:border-gray-600 after:rounded-full after:bg-white dark:bg-gray-700 peer-checked:bg-blue-600 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 after:transition-all after:content-[''] peer-checked:after:translate-x-full peer-checked:after:border-white dark:peer-focus:ring-blue-800 rtl:peer-checked:after:-translate-x-full"
               />
-              <span class="ms-3 text-sm font-medium text-gray-900 dark:text-gray-300">练习模式</span>
+              <span class="ms-3 text-sm font-medium text-blue-600 dark:text-blue-400">练习模式</span>
             </label>
             <label v-if="isTrainingModel" class="ml-2 inline-flex cursor-pointer items-center">
               <input v-model="isShowMeaning" type="checkbox" class="peer sr-only">
               <div
-                class="peer relative h-6 w-11 rounded-full bg-gray-200 after:absolute after:start-[2px] after:top-[2px] after:h-5 after:w-5 after:border after:border-gray-300 dark:border-gray-600 after:rounded-full after:bg-white dark:bg-gray-700 peer-checked:bg-blue-600 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 after:transition-all after:content-[''] peer-checked:after:translate-x-full peer-checked:after:border-white dark:peer-focus:ring-blue-800 rtl:peer-checked:after:-translate-x-full"
+                class="peer relative h-6 w-11 rounded-full bg-gray-200 after:absolute after:start-[2px] after:top-[2px] after:h-5 after:w-5 after:border after:border-gray-300 dark:border-gray-600 after:rounded-full after:bg-white dark:bg-gray-700 peer-checked:bg-gray-600 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-gray-300 after:transition-all after:content-[''] peer-checked:after:translate-x-full peer-checked:after:border-white dark:peer-focus:ring-gray-800 rtl:peer-checked:after:-translate-x-full"
               />
-              <span class="ms-3 text-sm font-medium text-gray-900 dark:text-gray-300">释义</span>
+              <span class="ms-3 text-sm font-medium text-gray-700 dark:text-gray-300">释义</span>
             </label>
             <label v-if="isTrainingModel" class="ml-2 inline-flex cursor-pointer items-center">
               <input v-model="isShowSource" type="checkbox" class="peer sr-only">
               <div
-                class="peer relative h-6 w-11 rounded-full bg-gray-200 after:absolute after:start-[2px] after:top-[2px] after:h-5 after:w-5 after:border after:border-gray-300 dark:border-gray-600 after:rounded-full after:bg-white dark:bg-gray-700 peer-checked:bg-blue-600 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 after:transition-all after:content-[''] peer-checked:after:translate-x-full peer-checked:after:border-white dark:peer-focus:ring-blue-800 rtl:peer-checked:after:-translate-x-full"
+                class="peer relative h-6 w-11 rounded-full bg-gray-200 after:absolute after:start-[2px] after:top-[2px] after:h-5 after:w-5 after:border after:border-gray-300 dark:border-gray-600 after:rounded-full after:bg-white dark:bg-gray-700 peer-checked:bg-purple-600 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-purple-300 after:transition-all after:content-[''] peer-checked:after:translate-x-full peer-checked:after:border-white dark:peer-focus:ring-purple-800 rtl:peer-checked:after:-translate-x-full"
               />
-              <span class="ms-3 text-sm font-medium text-gray-900 dark:text-gray-300">原词</span>
+              <span class="ms-3 text-sm font-medium text-purple-600 dark:text-purple-400">原词</span>
             </label>
             <label v-if="isTrainingModel" class="ml-2 inline-flex cursor-pointer items-center">
               <input v-model="isAutoPlayWordAudio" type="checkbox" class="peer sr-only">
               <div
-                class="peer relative h-6 w-11 rounded-full bg-gray-200 after:absolute after:start-[2px] after:top-[2px] after:h-5 after:w-5 after:border after:border-gray-300 dark:border-gray-600 after:rounded-full after:bg-white dark:bg-gray-700 peer-checked:bg-blue-600 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 after:transition-all after:content-[''] peer-checked:after:translate-x-full peer-checked:after:border-white dark:peer-focus:ring-blue-800 rtl:peer-checked:after:-translate-x-full"
+                class="peer relative h-6 w-11 rounded-full bg-gray-200 after:absolute after:start-[2px] after:top-[2px] after:h-5 after:w-5 after:border after:border-gray-300 dark:border-gray-600 after:rounded-full after:bg-white dark:bg-gray-700 peer-checked:bg-orange-600 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-orange-300 after:transition-all after:content-[''] peer-checked:after:translate-x-full peer-checked:after:border-white dark:peer-focus:ring-orange-800 rtl:peer-checked:after:-translate-x-full"
               />
-              <span class="ms-3 text-sm font-medium text-gray-900 dark:text-gray-300">自动播放</span>
+              <span class="ms-3 text-sm font-medium text-orange-600 dark:text-orange-400">自动播放</span>
             </label>
+            <label v-if="isTrainingModel" class="ml-2 inline-flex cursor-pointer items-center">
+              <input v-model="isOnlyShowErrors" type="checkbox" class="peer sr-only">
+              <div
+                class="peer relative h-6 w-11 rounded-full bg-gray-200 after:absolute after:start-[2px] after:top-[2px] after:h-5 after:w-5 after:border after:border-gray-300 dark:border-gray-600 after:rounded-full after:bg-white dark:bg-gray-700 peer-checked:bg-red-600 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-red-300 after:transition-all after:content-[''] peer-checked:after:translate-x-full peer-checked:after:border-white dark:peer-focus:ring-red-800 rtl:peer-checked:after:-translate-x-full"
+              />
+              <span class="ms-3 text-sm font-medium text-red-600 dark:text-red-400">只显示错误</span>
+            </label>
+            <button
+              v-if="isTrainingModel && isOnlyShowErrors"
+              type="button"
+              class="ml-2 rounded-lg bg-red-700 px-4 py-2.5 text-sm font-medium text-white dark:bg-red-600 hover:bg-red-800 focus:outline-none focus:ring-4 focus:ring-red-300 dark:hover:bg-red-700 dark:focus:ring-red-800"
+              @click="removeErrorWords"
+            >
+              🗑️ 剔除错词
+            </button>
+            <label v-if="isTrainingModel" class="ml-2 inline-flex cursor-pointer items-center">
+              <input v-model="isHideMastered" type="checkbox" class="peer sr-only">
+              <div
+                class="peer relative h-6 w-11 rounded-full bg-gray-200 after:absolute after:start-[2px] after:top-[2px] after:h-5 after:w-5 after:border after:border-gray-300 dark:border-gray-600 after:rounded-full after:bg-white dark:bg-gray-700 peer-checked:bg-green-600 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-green-300 after:transition-all after:content-[''] peer-checked:after:translate-x-full peer-checked:after:border-white dark:peer-focus:ring-green-800 rtl:peer-checked:after:-translate-x-full"
+              />
+              <span class="ms-3 text-sm font-medium text-green-600 dark:text-green-400">隐藏已掌握</span>
+            </label>
+            <label v-if="isTrainingModel" class="ml-2 inline-flex cursor-pointer items-center">
+              <input v-model="isShuffleMode" type="checkbox" class="peer sr-only">
+              <div
+                class="peer relative h-6 w-11 rounded-full bg-gray-200 after:absolute after:start-[2px] after:top-[2px] after:h-5 after:w-5 after:border after:border-gray-300 dark:border-gray-600 after:rounded-full after:bg-white dark:bg-gray-700 peer-checked:bg-yellow-500 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-yellow-300 after:transition-all after:content-[''] peer-checked:after:translate-x-full peer-checked:after:border-white dark:peer-focus:ring-yellow-800 rtl:peer-checked:after:-translate-x-full"
+              />
+              <span class="ms-3 text-sm font-medium text-yellow-600 dark:text-yellow-400">打乱顺序</span>
+            </label>
+            <div class="ml-4 flex items-center">
+              <span class="mr-2 text-sm font-medium text-gray-900 dark:text-gray-300">每组:</span>
+              <select
+                v-model="wordsPerPage"
+                class="block w-20 border border-gray-300 rounded-lg bg-gray-50 p-2 text-sm text-gray-900 dark:border-gray-600 focus:border-blue-500 dark:bg-gray-700 dark:text-white focus:ring-blue-500 dark:focus:border-blue-500 dark:focus:ring-blue-500"
+              >
+                <option value="1">
+                  1组
+                </option>
+                <option value="2">
+                  2组
+                </option>
+                <option value="3">
+                  3组
+                </option>
+                <option value="5">
+                  5组
+                </option>
+                <option value="10">
+                  10组
+                </option>
+                <option value="20">
+                  20组
+                </option>
+              </select>
+            </div>
           </div>
         </div>
       </div>
@@ -279,7 +832,7 @@ function copyAllError() {
                     <th class="p-4 text-left text-xs font-medium tracking-wider text-gray-500 dark:text-white">
                       词
                     </th>
-                    <th class="w-0 text-left text-xs font-medium text-gray-500 dark:text-white">
+                    <th class="p-4 text-left text-xs font-medium text-gray-500 dark:text-white">
                       词性
                     </th>
                     <th class="p-4 text-left text-xs font-medium tracking-wider text-gray-500 dark:text-white">
@@ -291,20 +844,29 @@ function copyAllError() {
                     <th class="p-4 text-left text-xs font-medium tracking-wider text-gray-500 dark:text-white">
                       拓展
                     </th>
+                    <th v-if="isTrainingModel" class="p-4 text-left text-xs font-medium tracking-wider text-gray-500 dark:text-white">
+                      统计
+                    </th>
+                    <th v-if="isTrainingModel" class="p-4 text-left text-xs font-medium tracking-wider text-gray-500 dark:text-white">
+                      操作
+                    </th>
                   </tr>
                 </thead>
                 <tbody class="bg-white dark:bg-gray-800">
                   <tr class="bg-hex-f3f3f3">
                     <td
-                      colspan="7"
+                      :colspan="isTrainingModel ? 9 : 7"
                       class="px-4 py-6 text-sm font-normal text-gray-900 dark:bg-gray-500 dark:text-white"
                     >
                       <div class="flex flex-row">
                         <div class="flex flex-1 items-center">
                           <span class="text-lg">{{ category }}</span>
-                          （ {{ refVocabulary[category].groupCount }} 组 {{ refVocabulary[category].wordCount }} 个词 ）
+                          （ {{ refVocabulary[category]?.groupCount || 0 }} 组 {{ refVocabulary[category]?.wordCount || 0 }} 个词 ）
+                          <span v-if="totalPages > 1" class="ml-4 text-sm text-gray-600">
+                            第 {{ currentPage }} / {{ totalPages }} 组 (每页{{ wordsPerPage.value }}组)
+                          </span>
                         </div>
-                        <div class="justify-items-end">
+                        <div v-if="refVocabulary[category]?.audio" class="justify-items-end">
                           <audio controls class="chapter">
                             <source :src="`vocabulary/audio/${refVocabulary[category].audio}`" type="audio/mpeg">
                           </audio>
@@ -312,10 +874,10 @@ function copyAllError() {
                       </div>
                     </td>
                   </tr>
-                  <template v-for="(wordGroup, i) of refVocabulary[category].words" :key="wordGroup.label">
+                  <template v-for="(wordGroup, i) of currentWordGroups" :key="wordGroup.label">
                     <tr
                       v-for="item of wordGroup"
-                      v-show="(isTrainingModel && (isOnlyShowErrors ? item.spellError : true)) || !isTrainingModel" :id="`tr_${item.id}`"
+                      v-show="shouldShowWord(item)" :id="`tr_${item.id}`"
                       :key="item.id"
                       :class="{ 'bg-gray-50 dark:bg-gray-700': item.id % 2 === 0, [`group-color-${i % 15}`]: true }" class="text-sm text-gray-900 dark:text-white"
                     >
@@ -324,6 +886,7 @@ function copyAllError() {
                       </td>
                       <td>
                         <i
+                          v-if="refVocabulary[category]?.audio"
                           class="i-ph-speaker-simple-high-bold inline-block cursor-pointer"
                           @click="play(`vocabulary/audio/${category}/${item.word[0]}.mp3`)"
                         />
@@ -336,8 +899,8 @@ function copyAllError() {
                           <input
                             :id="item.id" autocomplete="off" :class="getInputStyleClass(item)"
                             type="text"
-                            @focusout="onInputFoucsOut($event, item)" 
-                            @focusin="onInputFoucsIn($event, `vocabulary/audio/${category}/${item.word[0]}.mp3`)" 
+                            @focusout="onInputFoucsOut($event, item)"
+                            @focusin="onInputFoucsIn($event, `vocabulary/audio/${category}/${item.word[0]}.mp3`)"
                             @keydown="onInputKeydown"
                           >
                         </template>
@@ -371,6 +934,29 @@ function copyAllError() {
                       <td class="p-4">
                         {{ isTrainingModel ? '' : item.extra }}
                       </td>
+                      <td v-if="isTrainingModel" class="p-4">
+                        <div class="text-xs">
+                          <span class="text-green-600 dark:text-green-400">
+                            ✓ {{ item.correctCount || 0 }}
+                          </span>
+                          <span class="ml-2 text-red-600 dark:text-red-400">
+                            ✗ {{ item.errorCount || 0 }}
+                          </span>
+                        </div>
+                      </td>
+                      <td v-if="isTrainingModel" class="p-4">
+                        <button
+                          v-if="item.spellError"
+                          type="button"
+                          class="rounded-lg bg-red-600 px-3 py-1.5 text-xs font-medium text-white dark:bg-red-500 hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 dark:hover:bg-red-600"
+                          @click="removeSingleWord(item)"
+                        >
+                          🗑️ 剔除
+                        </button>
+                        <span v-else class="text-xs text-gray-500 dark:text-gray-400">
+                          -
+                        </span>
+                      </td>
                     </tr>
                   </template>
                 </tbody>
@@ -379,6 +965,44 @@ function copyAllError() {
           </div>
         </div>
       </div>
+
+      <!-- 分页导航 -->
+      <div v-if="totalPages > 1" class="mt-6 flex items-center justify-center space-x-2">
+        <button
+          :disabled="currentPage === 1"
+          class="rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white disabled:cursor-not-allowed hover:bg-blue-700 disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-blue-500"
+          @click="prevPage"
+        >
+          上一组
+        </button>
+
+        <div class="flex space-x-1">
+          <button
+            v-for="page in getVisiblePages()"
+            :key="page"
+            :class="{
+              'bg-blue-600 text-white': currentPage === page,
+              'bg-gray-200 text-gray-700 hover:bg-gray-300': currentPage !== page,
+              'cursor-default': page === '...',
+              'px-3 py-2 text-sm font-medium rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500': typeof page === 'number',
+              'px-2 text-gray-500': page === '...',
+            }"
+            :disabled="page === '...'"
+            @click="typeof page === 'number' ? goToPage(page) : null"
+          >
+            {{ page }}
+          </button>
+        </div>
+
+        <button
+          :disabled="currentPage === totalPages"
+          class="rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white disabled:cursor-not-allowed hover:bg-blue-700 disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-blue-500"
+          @click="nextPage"
+        >
+          下一组
+        </button>
+      </div>
+
       <!-- Card Footer -->
       <div class="flex items-center justify-between pt-3 sm:pt-6">
         <div>
@@ -408,6 +1032,141 @@ function copyAllError() {
           >
             拷贝错词
           </button>
+          <button
+            v-if="isShuffleMode"
+            type="button"
+            class="ml-2 rounded-lg bg-yellow-600 px-5 py-2.5 text-sm font-medium text-white dark:bg-yellow-500 hover:bg-yellow-700 focus:outline-none focus:ring-4 focus:ring-yellow-300 dark:hover:bg-yellow-600 dark:focus:ring-yellow-800"
+            @click="shuffleCurrentPage"
+          >
+            重新打乱
+          </button>
+          <button
+            type="button"
+            class="ml-2 rounded-lg bg-red-700 px-5 py-2.5 text-sm font-medium text-white dark:bg-red-600 hover:bg-red-800 focus:outline-none focus:ring-4 focus:ring-red-300 dark:hover:bg-red-700 dark:focus:ring-red-800"
+            @click="clearProgress"
+          >
+            清除进度
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 添加生词弹窗 -->
+  <div v-if="isShowAddWordDialog" class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
+    <div class="relative mx-4 max-h-[90vh] max-w-2xl w-full overflow-auto rounded-lg bg-white shadow-xl dark:bg-gray-800">
+      <!-- 弹窗头部 -->
+      <div class="sticky top-0 flex items-center justify-between border-b border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-800">
+        <h3 class="text-lg font-semibold text-gray-900 dark:text-white">
+          📝 添加生词管理
+        </h3>
+        <button
+          type="button"
+          class="rounded-lg bg-transparent p-1.5 text-sm text-gray-400 hover:bg-gray-100 hover:text-gray-900 dark:hover:bg-gray-700 dark:hover:text-white"
+          @click="isShowAddWordDialog = false"
+        >
+          <svg class="h-5 w-5" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
+            <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd" />
+          </svg>
+        </button>
+      </div>
+
+      <!-- 弹窗内容 -->
+      <div class="p-6">
+        <!-- 快速添加表单 -->
+        <div class="mb-6 rounded-lg bg-blue-50 p-4 dark:bg-blue-900/20">
+          <h4 class="mb-3 text-lg font-medium text-blue-900 dark:text-blue-100">
+            快速添加单词
+          </h4>
+          <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <input
+              v-model="newWord.word"
+              placeholder="单词（多个单词用逗号分隔）"
+              class="border border-gray-300 rounded-lg bg-white p-3 text-sm text-gray-900 dark:border-gray-600 focus:border-blue-500 dark:bg-gray-700 dark:text-white focus:ring-blue-500 dark:placeholder-gray-400"
+            >
+            <input
+              v-model="newWord.pos"
+              placeholder="词性（如：n. v. adj.）"
+              class="border border-gray-300 rounded-lg bg-white p-3 text-sm text-gray-900 dark:border-gray-600 focus:border-blue-500 dark:bg-gray-700 dark:text-white focus:ring-blue-500 dark:placeholder-gray-400"
+            >
+            <input
+              v-model="newWord.meaning"
+              placeholder="中文释义"
+              class="border border-gray-300 rounded-lg bg-white p-3 text-sm text-gray-900 sm:col-span-2 dark:border-gray-600 focus:border-blue-500 dark:bg-gray-700 dark:text-white focus:ring-blue-500 dark:placeholder-gray-400"
+            >
+            <input
+              v-model="newWord.example"
+              placeholder="例句（可选）"
+              class="border border-gray-300 rounded-lg bg-white p-3 text-sm text-gray-900 sm:col-span-2 dark:border-gray-600 focus:border-blue-500 dark:bg-gray-700 dark:text-white focus:ring-blue-500 dark:placeholder-gray-400"
+            >
+          </div>
+          <div class="mt-4 flex justify-end">
+            <button
+              type="button"
+              class="rounded-lg bg-blue-600 px-6 py-2.5 text-sm font-medium text-white dark:bg-blue-500 hover:bg-blue-700 focus:outline-none focus:ring-4 focus:ring-blue-300 dark:hover:bg-blue-600"
+              @click="addNewWord"
+            >
+              ➕ 添加单词
+            </button>
+          </div>
+        </div>
+
+        <!-- 已添加的生词列表 -->
+        <div class="rounded-lg bg-gray-50 p-4 dark:bg-gray-700">
+          <div class="mb-4 flex items-center justify-between">
+            <h4 class="text-lg font-medium text-gray-900 dark:text-white">
+              已添加生词（{{ refVocabulary['23 - 自添加生词']?.wordCount || 0 }} 个）
+            </h4>
+            <button
+              v-if="(refVocabulary['23 - 自添加生词']?.wordCount || 0) > 0"
+              type="button"
+              class="rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white dark:bg-red-500 hover:bg-red-700 focus:outline-none focus:ring-4 focus:ring-red-300 dark:hover:bg-red-600"
+              @click="clearCustomWords"
+            >
+              🗑️ 清空所有
+            </button>
+          </div>
+
+          <div class="max-h-96 overflow-auto">
+            <div
+              v-for="(group, groupIndex) in (refVocabulary['23 - 自添加生词']?.words || [])"
+              :key="group.label"
+              class="mb-4 border border-gray-200 rounded-lg bg-white p-4 dark:border-gray-600 dark:bg-gray-800"
+            >
+              <div class="mb-2 flex items-center justify-between">
+                <h5 class="font-medium text-gray-900 dark:text-white">
+                  {{ group.label }}
+                </h5>
+                <button
+                  type="button"
+                  class="rounded-lg bg-red-100 px-3 py-1 text-sm text-red-600 dark:bg-red-900/20 hover:bg-red-200 dark:text-red-400"
+                  @click="removeGroup(groupIndex)"
+                >
+                  删除整组
+                </button>
+              </div>
+              <div class="space-y-2">
+                <div
+                  v-for="(word, wordIndex) in group"
+                  :key="word.id"
+                  class="flex items-center justify-between border border-gray-200 rounded-lg p-3 dark:border-gray-600"
+                >
+                  <div class="flex-1">
+                    <span class="font-medium text-gray-900 dark:text-white">{{ word.word }}</span>
+                    <span class="ml-2 text-sm text-gray-600 dark:text-gray-400">({{ word.pos }})</span>
+                    <span class="ml-2 text-sm text-gray-700 dark:text-gray-300">{{ word.meaning }}</span>
+                  </div>
+                  <button
+                    type="button"
+                    class="rounded-lg bg-red-100 px-3 py-1 text-sm text-red-600 dark:bg-red-900/20 hover:bg-red-200 dark:text-red-400"
+                    @click="removeWord(groupIndex, wordIndex)"
+                  >
+                    删除
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
