@@ -8,9 +8,11 @@ import {
 
 export default defineConfig({
   shortcuts: [
-    // ['btn', 'px-4 py-1 rounded inline-block bg-teal-600 text-white cursor-pointer hover:bg-teal-700 disabled:cursor-default disabled:bg-gray-600 disabled:opacity-50'],
-    // ['icon-btn', 'text-[0.9em] inline-block cursor-pointer select-none opacity-75 transition duration-200 ease-in-out hover:opacity-100 hover:text-teal-600 !outline-none'],
-    // ['router-link-active', 'text-primary-700 dark:text-primary-500'],
+    // 移动端适配快捷样式
+    ['mobile-container', 'max-w-7xl mx-auto px-2 sm:px-4'],
+    ['mobile-card', 'bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700'],
+    ['mobile-input', 'w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500'],
+    ['mobile-button', 'w-full sm:w-auto px-4 py-2 text-sm font-medium rounded-lg focus:outline-none focus:ring-2'],
   ],
   theme: {
     colors: {
@@ -27,6 +29,15 @@ export default defineConfig({
     textDecoration: ['active'],
     minWidth: {
       kanban: '28rem',
+    },
+    // 移动端断点扩展
+    screens: {
+      'xs': '320px',
+      'sm': '640px',
+      'md': '768px',
+      'lg': '1024px',
+      'xl': '1280px',
+      '2xl': '1536px',
     },
   },
   presets: [

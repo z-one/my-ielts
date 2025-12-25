@@ -18,6 +18,8 @@ const isShowAddWordDialog = ref(false)
 const currentPage = ref(1)
 const wordsPerPage = ref(Math.max(1, Number.parseInt(localStorage.getItem('vocabulary_words_per_page') || '5', 10))) // 每页显示组数，默认5组
 
+
+
 const trainingStats = ref('')
 const keyword = ref('')
 const chapters = Object.keys(vocabulary)
@@ -26,9 +28,21 @@ const category = ref(localStorage.getItem(CHAPTER_KEY) || chapters[0])
 const loaded = ref(false)
 const refVocabulary = reactive(vocabulary)
 
-// 分页计算属性
+// 获取当前显示的单词组
 const currentWordGroups = computed(() => {
   const groups = refVocabulary[category.value]?.words || []
+
+  // 如果是错词模式，返回所有错词扁平化后的数组
+  if (isTrainingModel.value && isOnlyShowErrors.value) {
+    const allErrorWords = []
+    for (const group of groups) {
+      const errorWords = group.filter(item => item.spellError)
+      allErrorWords.push(errorWords)
+    }
+    return allErrorWords.length > 0 ? allErrorWords : [[]]
+  }
+
+  // 正常分页逻辑
   const start = (currentPage.value - 1) * wordsPerPage.value
   const end = start + wordsPerPage.value
   let pageGroups = groups.slice(start, end)
@@ -50,6 +64,12 @@ const currentWordGroups = computed(() => {
 
 const totalPages = computed(() => {
   const groups = refVocabulary[category.value]?.words || []
+
+  // 错词模式：所有错词作为一页
+  if (isTrainingModel.value && isOnlyShowErrors.value)
+    return 1
+
+  // 正常模式：按组数计算
   return Math.ceil(groups.length / wordsPerPage.value)
 })
 
@@ -106,6 +126,7 @@ function saveProgress() {
           spellError: item.spellError || false,
           correctCount: item.correctCount || 0,
           errorCount: item.errorCount || 0,
+          showSource: item.showSource || false,
         }
       }
     }
@@ -134,6 +155,7 @@ function loadProgress() {
           item.spellError = saved.spellError
           item.correctCount = saved.correctCount || 0
           item.errorCount = saved.errorCount || 0
+          item.showSource = saved.showSource || false
         }
       }
     }
@@ -179,8 +201,23 @@ function calcStats() {
   return `${missing} 个未完成，${correct} 个正确，${error} 个错误，${mastered} 个已掌握 | 正确：${totalCorrectCount} 次，错误：${totalErrorCount} 次`
 }
 
+// 检测移动设备
+const isMobile = ref(false)
+const touchStartY = ref(0)
+const touchEndY = ref(0)
+
 onMounted(() => {
   loaded.value = true
+
+  // 检测是否为移动设备
+  const checkMobile = () => {
+    isMobile.value = window.innerWidth <= 768
+  }
+  checkMobile()
+  window.addEventListener('resize', checkMobile)
+
+  // 初始化单词属性
+  initWordProperties()
 
   // 初始化自添加生词
   initCustomWords()
@@ -199,7 +236,44 @@ onMounted(() => {
       }
     }
   }
+
+  // 移动端触摸事件处理
+  if (isMobile.value) {
+    document.addEventListener('touchstart', handleTouchStart, { passive: true })
+    document.addEventListener('touchend', handleTouchEnd, { passive: true })
+  }
 })
+
+onUnmounted(() => {
+  // 清理工作
+})
+
+// 移动端触摸处理
+function handleTouchStart(e) {
+  touchStartY.value = e.touches[0].clientY
+}
+
+function handleTouchEnd(e) {
+  touchEndY.value = e.changedTouches[0].clientY
+  handleSwipe()
+}
+
+function handleSwipe() {
+  const swipeDistance = touchStartY.value - touchEndY
+  const minSwipeDistance = 50
+
+  if (Math.abs(swipeDistance) < minSwipeDistance)
+    return
+
+  if (swipeDistance > 0) {
+    // 向上滑动 - 下一页
+    nextPage()
+  }
+  else {
+    // 向下滑动 - 上一页
+    prevPage()
+  }
+}
 
 onUpdated(() => {
   // 音频再切换 SRC 之后需要调用一下 load() 不然看不到效果
@@ -207,7 +281,12 @@ onUpdated(() => {
     el.load()
 })
 
+// 移动端优化键盘事件处理
 document.addEventListener('keydown', (ev) => {
+  // 只在非移动端处理键盘事件
+  if (isMobile.value)
+    return
+
   // 激活的那个音频可以通过方向键进行快进/退
   if (['ArrowLeft', 'ArrowRight', ' '].includes(ev.key)) {
     ev.preventDefault()
@@ -221,7 +300,6 @@ document.addEventListener('keydown', (ev) => {
       if (keyMap[ev.key]) {
         const step = keyMap[ev.key]
         audioTag.currentTime = audioTag.currentTime + step
-        // console.log(step, audioT ag.currentTime)
       }
       if (ev.key === ' ') {
         if (audioTag.paused)
@@ -239,10 +317,27 @@ function play(audioPath) {
     audio.pause()
     audio.currentTime = 0
   }
-  audio = document.createElement('audio')
-  audio.src = audioPath
-  audio.play()
+
+  // 优化的音频播放，支持移动端和桌面端
+  try {
+    audio = new Audio()
+    audio.src = audioPath
+    audio.play().catch((error) => {
+      console.log('音频播放失败:', error)
+      // 移动端可能需要用户交互才能播放
+      if (isMobile.value) {
+        // 可以在这里显示提示，让用户点击播放
+        // eslint-disable-next-line no-console
+        console.log('移动端音频播放可能需要用户交互')
+      }
+    })
+  }
+  catch (error) {
+    console.error('音频创建失败:', error)
+  }
 }
+
+
 
 function copyText(item) {
   const text = `${item.word} ${item.pos} ${item.meaning}`
@@ -266,6 +361,23 @@ function onInputKeydown(e) {
 function onInputFoucsIn(e, audioPath) {
   if (isAutoPlayWordAudio.value)
     play(audioPath)
+
+  // 自动朗读释义 - 简化版本
+  if (isAutoPlayMeaningAudio.value) {
+    const item = findItemById(e.target.id)
+    if (item && item.meaning && item.id !== lastSpokenWordId.value) {
+      // 防止重复朗读同一个单词
+      lastSpokenWordId.value = item.id
+
+      // 延迟一下，让单词音频先播放
+      const delay = isAutoPlayWordAudio.value ? 2000 : 800
+      setTimeout(() => {
+        if (lastSpokenWordId.value === item.id) { // 确保还是同一个单词
+          speakMeaning(item.meaning, item.word[0])
+        }
+      }, delay)
+    }
+  }
 }
 
 function onInputFoucsOut(e, item) {
@@ -291,9 +403,9 @@ function onInputFoucsOut(e, item) {
 
 function getInputStyleClass(item) {
   const cls = {
-    error: 'ml-4 bg-red-50 border border-red-500 text-red-900 placeholder-red-700 text-sm rounded-lg focus:ring-red-500 dark:bg-gray-700 focus:border-red-500 inline-block p-2.5 dark:text-red-500 dark:placeholder-red-500 dark:border-red-500',
-    normal: 'ml-4 inline-block border border-gray-300 rounded-lg bg-gray-50 p-2.5 text-sm text-gray-900 dark:border-gray-600 focus:border-blue-500 dark:bg-gray-700 dark:text-white focus:ring-blue-500 dark:focus:border-blue-500 dark:focus:ring-blue-500 dark:placeholder-gray-400',
-    success: 'ml-4 bg-green-50 border border-green-500 text-green-900 dark:text-green-400 placeholder-green-700 dark:placeholder-green-500 text-sm rounded-lg focus:ring-green-500 focus:border-green-500 inline-block p-2.5 dark:bg-gray-700 dark:border-green-500',
+    error: 'w-full sm:w-auto ml-0 sm:ml-4 bg-red-50 border border-red-500 text-red-900 placeholder-red-700 text-sm rounded-lg focus:ring-red-500 dark:bg-gray-700 focus:border-red-500 inline-block p-2.5 dark:text-red-500 dark:placeholder-red-500 dark:border-red-500',
+    normal: 'w-full sm:w-auto ml-0 sm:ml-4 inline-block border border-gray-300 rounded-lg bg-gray-50 p-2.5 text-sm text-gray-900 dark:border-gray-600 focus:border-blue-500 dark:bg-gray-700 dark:text-white focus:ring-blue-500 dark:focus:border-blue-500 dark:focus:ring-blue-500 dark:placeholder-gray-400',
+    success: 'w-full sm:w-auto ml-0 sm:ml-4 bg-green-50 border border-green-500 text-green-900 dark:text-green-400 placeholder-green-700 dark:placeholder-green-500 text-sm rounded-lg focus:ring-green-500 focus:border-green-500 inline-block p-2.5 dark:bg-gray-700 dark:border-green-500',
   }
   // 在练习模式下，实时显示验证结果
   if (isTrainingModel.value) {
@@ -558,6 +670,21 @@ watch(wordsPerPage, (newValue) => {
   currentPage.value = 1 // 重置到第一页
 })
 
+// 初始化单词属性
+function initWordProperties() {
+  for (const chapterKey in refVocabulary) {
+    const chapter = refVocabulary[chapterKey]
+    if (chapter.words) {
+      for (const group of chapter.words) {
+        for (const item of group) {
+          if (item.showSource === undefined)
+            item.showSource = false
+        }
+      }
+    }
+  }
+}
+
 // 初始化自添加生词章节
 const CUSTOM_WORDS_KEY = 'vocabulary_custom_words'
 function initCustomWords() {
@@ -587,6 +714,17 @@ function initCustomWords() {
   }
   else {
     refVocabulary['23 - 自添加生词'] = defaultCustomWords
+  }
+
+  // 初始化自定义单词的 showSource 属性
+  const customChapter = refVocabulary['23 - 自添加生词']
+  if (customChapter.words) {
+    for (const group of customChapter.words) {
+      for (const item of group) {
+        if (item.showSource === undefined)
+          item.showSource = false
+      }
+    }
   }
 }
 
@@ -699,21 +837,23 @@ watch(category, () => {
 </script>
 
 <template>
-  <div class="px-4 pt-6 2xl:px-0">
-    <div class="border border-gray-200 rounded-lg bg-white p-4 shadow-sm dark:border-gray-700 dark:bg-gray-800 sm:p-6">
+  <div class="px-2 pt-4 lg:px-0 sm:px-4 sm:pt-6">
+    <div class="p-3 shadow-sm mobile-card lg:p-6 sm:p-4">
       <!-- Card header -->
-      <div class="items-center justify-between lg:flex">
-        <div class="mb-4 lg:mb-0">
-          <h3 class="mb-2 text-xl font-bold text-gray-900 dark:text-white">
-            雅思词汇真经
-          </h3>
-          <span class="text-base font-normal text-gray-500 dark:text-gray-400">涵盖雅思必备核心词，逻辑词群记忆法</span>
+      <div class="mb-4 lg:mb-0">
+        <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h3 class="mb-1 text-lg font-bold text-gray-900 sm:text-xl dark:text-white">
+              雅思词汇真经
+            </h3>
+            <span class="text-sm font-normal text-gray-500 sm:text-base dark:text-gray-400">涵盖雅思必备核心词，逻辑词群记忆法</span>
+          </div>
         </div>
-        <div class="items-center sm:flex">
-          <div class="flex items-center">
+        <div class="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center">
+          <div class="flex flex-wrap items-center gap-2">
             <select
               v-model="category"
-              class="block w-full flex-1 border border-gray-300 rounded-lg bg-gray-50 p-2.5 text-sm text-gray-900 dark:border-gray-600 focus:border-blue-500 dark:bg-gray-700 dark:text-white focus:ring-blue-500 dark:focus:border-blue-500 dark:focus:ring-blue-500 dark:placeholder-gray-400"
+              class="block w-full text-sm mobile-input sm:flex-1"
             >
               <!-- <option value="">
                 全部章节
@@ -724,7 +864,7 @@ watch(category, () => {
             </select>
             <button
               type="button"
-              class="ml-2 rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-medium text-white dark:bg-indigo-500 hover:bg-indigo-700 focus:outline-none focus:ring-4 focus:ring-indigo-300 dark:hover:bg-indigo-600 dark:focus:ring-indigo-800"
+              class="bg-indigo-600 text-white mobile-button dark:bg-indigo-500 hover:bg-indigo-700 focus:ring-indigo-300 dark:hover:bg-indigo-600 dark:focus:ring-indigo-800"
               @click="isShowAddWordDialog = true"
             >
               📝 添加生词
@@ -750,6 +890,7 @@ watch(category, () => {
               />
               <span class="ms-3 text-sm font-medium text-purple-600 dark:text-purple-400">原词</span>
             </label>
+
             <label v-if="isTrainingModel" class="ml-2 inline-flex cursor-pointer items-center">
               <input v-model="isAutoPlayWordAudio" type="checkbox" class="peer sr-only">
               <div
@@ -758,7 +899,7 @@ watch(category, () => {
               <span class="ms-3 text-sm font-medium text-orange-600 dark:text-orange-400">自动播放</span>
             </label>
             <label v-if="isTrainingModel" class="ml-2 inline-flex cursor-pointer items-center">
-              <input v-model="isOnlyShowErrors" type="checkbox" class="peer sr-only">
+              <input v-model="isOnlyShowErrors" type="checkbox" class="peer sr-only" @change="currentPage = 1">
               <div
                 class="peer relative h-6 w-11 rounded-full bg-gray-200 after:absolute after:start-[2px] after:top-[2px] after:h-5 after:w-5 after:border after:border-gray-300 dark:border-gray-600 after:rounded-full after:bg-white dark:bg-gray-700 peer-checked:bg-red-600 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-red-300 after:transition-all after:content-[''] peer-checked:after:translate-x-full peer-checked:after:border-white dark:peer-focus:ring-red-800 rtl:peer-checked:after:-translate-x-full"
               />
@@ -816,11 +957,133 @@ watch(category, () => {
         </div>
       </div>
       <!-- Table -->
-      <div class="mt-6 flex flex-col">
+      <div class="mt-4 flex flex-col sm:mt-6">
         <div class="overflow-x-auto rounded-lg">
           <div class="inline-block min-w-full align-middle">
             <div class="overflow-hidden shadow sm:rounded-lg">
-              <table class="min-w-full divide-y divide-gray-200 dark:divide-gray-600">
+              <!-- 移动端卡片视图 -->
+              <div v-if="isMobile" class="space-y-3">
+                <!-- 移动端章节信息 -->
+                <div class="bg-gray-50 p-4 mobile-card dark:bg-gray-700">
+                  <div class="flex flex-col space-y-3">
+                    <div class="flex items-center justify-between">
+                      <h4 class="text-lg font-semibold text-gray-900 dark:text-white">
+                        {{ category }}
+                      </h4>
+                    </div>
+                    <div class="text-sm text-gray-600 dark:text-gray-400">
+                      {{ refVocabulary[category]?.groupCount || 0 }} 组 {{ refVocabulary[category]?.wordCount || 0 }} 个词
+                    </div>
+                    <div v-if="totalPages > 1" class="text-sm text-gray-600 dark:text-gray-400">
+                      第 {{ currentPage }} / {{ totalPages }} 组 (每页{{ wordsPerPage.value }}组)
+                    </div>
+                    <div v-if="refVocabulary[category]?.audio" class="flex justify-center">
+                      <audio controls class="max-w-xs w-full">
+                        <source :src="`vocabulary/audio/${refVocabulary[category].audio}`" type="audio/mpeg">
+                      </audio>
+                    </div>
+                  </div>
+                </div>
+                <template v-for="(wordGroup, i) of currentWordGroups" :key="wordGroup.label">
+                  <div
+                    v-for="item of wordGroup"
+                    v-show="shouldShowWord(item)"
+                    :id="`tr_${item.id}`"
+                    :key="item.id"
+                    :class="{ [`group-color-${i % 15}`]: true }"
+                    class="p-3 text-sm mobile-card"
+                  >
+                    <!-- 移动端卡片内容 -->
+                    <div class="space-y-2">
+                      <!-- 顶部操作栏 -->
+                      <div class="flex items-center justify-between">
+                        <span class="text-xs text-gray-500"># {{ item.id }}</span>
+                        <div class="flex items-center gap-2">
+                          <i
+                            v-if="refVocabulary[category]?.audio"
+                            class="i-ph-speaker-simple-high-bold text-blue-500"
+                            @click="play(`vocabulary/audio/${category}/${item.word[0]}.mp3`)"
+                          />
+
+                          <template v-if="isTrainingModel">
+                            <i
+                              :class="`${item.showSource ? 'i-ph-eye-slash-bold' : 'i-ph-eye-bold'} text-gray-500`"
+                              title="显示完整信息"
+                              @click="item.showSource = !item.showSource"
+                            />
+                          </template>
+                        </div>
+                      </div>
+
+                      <!-- 单词内容 -->
+                      <div class="space-y-1">
+                        <!-- 原词显示逻辑 -->
+                        <div v-if="!isTrainingModel || item.showSource || isShowSource || (isTrainingModel && isOnlyShowErrors && item.spellError)">
+                          <div class="font-medium text-gray-900 dark:text-white">
+                            <span v-for="w in item.word" :key="w">
+                              <a
+                                class="text-blue-600 dark:text-blue-400 hover:underline"
+                                :title="`在剑桥词典中查询 ${w}`"
+                                target="_blank"
+                                :href="`https://dictionary.cambridge.org/dictionary/english-chinese-simplified/${w}`"
+                              >{{ w }}</a>
+                            </span>
+                            <span class="ml-2 text-sm italic text-gray-600 dark:text-gray-400">{{ item.pos }}</span>
+                          </div>
+                        </div>
+
+                        <!-- 释义显示逻辑 -->
+                        <div v-if="isShowMeaning || (isTrainingModel && item.showSource)" class="text-gray-700 dark:text-gray-300">
+                          {{ item.meaning }}
+                        </div>
+
+                        <!-- 例句显示逻辑 -->
+                        <div v-if="(!isTrainingModel && item.example) || (isTrainingModel && item.showSource && item.example)" class="text-xs text-gray-600 dark:text-gray-400">
+                          {{ item.example }}
+                        </div>
+
+                        <!-- 拓展显示逻辑 -->
+                        <div v-if="(!isTrainingModel && item.extra) || (isTrainingModel && item.showSource && item.extra)" class="text-xs text-gray-600 dark:text-gray-400">
+                          {{ item.extra }}
+                        </div>
+                      </div>
+
+                      <!-- 练习输入 -->
+                      <template v-if="isTrainingModel">
+                        <input
+                          :id="item.id"
+                          :class="getInputStyleClass(item)"
+                          type="text"
+                          placeholder="输入单词..."
+                          autocomplete="off"
+                          @focusout="onInputFoucsOut($event, item)"
+                          @focusin="onInputFoucsIn($event, `vocabulary/audio/${category}/${item.word[0]}.mp3`)"
+                          @keydown="onInputKeydown"
+                        >
+
+                        <!-- 统计信息 -->
+                        <div v-if="isTrainingModel" class="flex items-center justify-between">
+                          <div class="text-xs">
+                            <span class="text-green-600 dark:text-green-400">✓ {{ item.correctCount || 0 }}</span>
+                            <span class="ml-2 text-red-600 dark:text-red-400">✗ {{ item.errorCount || 0 }}</span>
+                          </div>
+                          <button
+                            v-if="item.spellError"
+                            type="button"
+                            class="rounded-lg bg-red-600 px-3 py-1.5 text-xs font-medium text-white dark:bg-red-500 hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 dark:hover:bg-red-600"
+                            @click="removeSingleWord(item)"
+                          >
+                            剔除
+                          </button>
+                        </div>
+                      </template>
+                    </div>
+                  </div>
+                </template>
+              </div>
+
+              <!-- 桌面端表格视图 -->
+              <table v-else class="min-w-full divide-y divide-gray-200 dark:divide-gray-600">
                 <thead class="bg-gray-50 dark:bg-gray-700">
                   <tr>
                     <th class="p-4 text-left text-xs font-medium tracking-wider text-gray-500 dark:text-white">
@@ -852,7 +1115,7 @@ watch(category, () => {
                     </th>
                   </tr>
                 </thead>
-                <tbody class="bg-white dark:bg-gray-800">
+                <tbody v-if="!isMobile" class="bg-white dark:bg-gray-800">
                   <tr class="bg-hex-f3f3f3">
                     <td
                       :colspan="isTrainingModel ? 9 : 7"
@@ -891,6 +1154,7 @@ watch(category, () => {
                           @click="play(`vocabulary/audio/${category}/${item.word[0]}.mp3`)"
                         />
 
+
                         <template v-if="isTrainingModel">
                           <i
                             :class="`${item.showSource ? 'i-ph-eye-slash-bold' : 'i-ph-eye-bold'} inline-block cursor-pointer ml-4`"
@@ -906,7 +1170,7 @@ watch(category, () => {
                         </template>
                       </td>
                       <td class="group relative whitespace-nowrap p-4">
-                        <div v-if="!isTrainingModel || item.showSource || (isTrainingModel && isOnlyShowErrors && item.spellError) || isShowSource">
+                        <div v-if="!isTrainingModel || item.showSource || isShowSource || (isTrainingModel && isOnlyShowErrors && item.spellError)">
                           <p v-for="w in item.word" :key="w">
                             <a
                               class="hover:underline" :title="`在剑桥词典中查询 ${w}`" target="_blank"
@@ -926,13 +1190,13 @@ watch(category, () => {
                         {{ item.pos }}
                       </td>
                       <td class="p-4">
-                        {{ isShowMeaning ? item.meaning : '' }}
+                        {{ (isShowMeaning || (isTrainingModel && item.showSource)) ? item.meaning : '' }}
                       </td>
                       <td class="p-4">
-                        {{ isTrainingModel ? '' : item.example }}
+                        {{ ((!isTrainingModel && item.example) || (isTrainingModel && item.showSource && item.example)) ? item.example : '' }}
                       </td>
                       <td class="p-4">
-                        {{ isTrainingModel ? '' : item.extra }}
+                        {{ ((!isTrainingModel && item.extra) || (isTrainingModel && item.showSource && item.extra)) ? item.extra : '' }}
                       </td>
                       <td v-if="isTrainingModel" class="p-4">
                         <div class="text-xs">
@@ -967,94 +1231,160 @@ watch(category, () => {
       </div>
 
       <!-- 分页导航 -->
-      <div v-if="totalPages > 1" class="mt-6 flex items-center justify-center space-x-2">
-        <button
-          :disabled="currentPage === 1"
-          class="rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white disabled:cursor-not-allowed hover:bg-blue-700 disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-blue-500"
-          @click="prevPage"
-        >
-          上一组
-        </button>
-
-        <div class="flex space-x-1">
+      <div v-if="totalPages > 1" class="mt-4 sm:mt-6">
+        <!-- 移动端分页 -->
+        <div v-if="isMobile" class="flex items-center justify-between">
           <button
-            v-for="page in getVisiblePages()"
-            :key="page"
-            :class="{
-              'bg-blue-600 text-white': currentPage === page,
-              'bg-gray-200 text-gray-700 hover:bg-gray-300': currentPage !== page,
-              'cursor-default': page === '...',
-              'px-3 py-2 text-sm font-medium rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500': typeof page === 'number',
-              'px-2 text-gray-500': page === '...',
-            }"
-            :disabled="page === '...'"
-            @click="typeof page === 'number' ? goToPage(page) : null"
+            :disabled="currentPage === 1"
+            class="flex-1 rounded-l-lg bg-blue-600 px-3 py-3 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            @click="prevPage"
           >
-            {{ page }}
+            ⬅️ 上一组
+          </button>
+          <div class="flex-1 bg-gray-100 px-4 py-3 text-center text-sm font-medium text-gray-700 dark:bg-gray-700 dark:text-gray-300">
+            {{ currentPage }} / {{ totalPages }}
+          </div>
+          <button
+            :disabled="currentPage === totalPages"
+            class="flex-1 rounded-r-lg bg-blue-600 px-3 py-3 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            @click="nextPage"
+          >
+            下一组 ➡️
           </button>
         </div>
 
-        <button
-          :disabled="currentPage === totalPages"
-          class="rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white disabled:cursor-not-allowed hover:bg-blue-700 disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-blue-500"
-          @click="nextPage"
-        >
-          下一组
-        </button>
+        <!-- 桌面端分页 -->
+        <div v-else class="flex items-center justify-center space-x-2">
+          <button
+            :disabled="currentPage === 1"
+            class="rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white disabled:cursor-not-allowed hover:bg-blue-700 disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            @click="prevPage"
+          >
+            上一组
+          </button>
+
+          <div class="flex space-x-1">
+            <button
+              v-for="page in getVisiblePages()"
+              :key="page"
+              :class="{
+                'bg-blue-600 text-white': currentPage === page,
+                'bg-gray-200 text-gray-700 hover:bg-gray-300': currentPage !== page,
+                'cursor-default': page === '...',
+                'px-3 py-2 text-sm font-medium rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500': typeof page === 'number',
+                'px-2 text-gray-500': page === '...',
+              }"
+              :disabled="page === '...'"
+              @click="typeof page === 'number' ? goToPage(page) : null"
+            >
+              {{ page }}
+            </button>
+          </div>
+
+          <button
+            :disabled="currentPage === totalPages"
+            class="rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white disabled:cursor-not-allowed hover:bg-blue-700 disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            @click="nextPage"
+          >
+            下一组
+          </button>
+        </div>
       </div>
 
       <!-- Card Footer -->
-      <div class="flex items-center justify-between pt-3 sm:pt-6">
+      <div class="flex flex-col gap-4 pt-3 sm:pt-6">
         <div>
-          <p v-if="isTrainingModel">
+          <p v-if="isTrainingModel" class="text-sm text-gray-700 dark:text-gray-300">
             {{ trainingStats }}
           </p>
         </div>
-        <div v-if="isTrainingModel" class="flex-shrink-0">
-          <button
-            type="button"
-            class="rounded-lg bg-blue-700 px-5 py-2.5 text-sm font-medium text-white dark:bg-blue-600 hover:bg-blue-800 focus:outline-none focus:ring-4 focus:ring-blue-300 dark:hover:bg-blue-700 dark:focus:ring-blue-800"
-            @click="isFinishTraining = true"
-          >
-            完成练习
-          </button>
-          <button
-            type="button"
-            class="ml-2 rounded-lg bg-blue-700 px-5 py-2.5 text-sm font-medium text-white dark:bg-blue-600 hover:bg-blue-800 focus:outline-none focus:ring-4 focus:ring-blue-300 dark:hover:bg-blue-700 dark:focus:ring-blue-800"
-            @click="isOnlyShowErrors = !isOnlyShowErrors"
-          >
-            {{ isOnlyShowErrors ? '展示所有' : '仅展示错词' }}
-          </button>
-          <button
-            type="button"
-            class="ml-2 rounded-lg bg-blue-700 px-5 py-2.5 text-sm font-medium text-white dark:bg-blue-600 hover:bg-blue-800 focus:outline-none focus:ring-4 focus:ring-blue-300 dark:hover:bg-blue-700 dark:focus:ring-blue-800"
-            @click="copyAllError"
-          >
-            拷贝错词
-          </button>
-          <button
-            v-if="isShuffleMode"
-            type="button"
-            class="ml-2 rounded-lg bg-yellow-600 px-5 py-2.5 text-sm font-medium text-white dark:bg-yellow-500 hover:bg-yellow-700 focus:outline-none focus:ring-4 focus:ring-yellow-300 dark:hover:bg-yellow-600 dark:focus:ring-yellow-800"
-            @click="shuffleCurrentPage"
-          >
-            重新打乱
-          </button>
-          <button
-            type="button"
-            class="ml-2 rounded-lg bg-red-700 px-5 py-2.5 text-sm font-medium text-white dark:bg-red-600 hover:bg-red-800 focus:outline-none focus:ring-4 focus:ring-red-300 dark:hover:bg-red-700 dark:focus:ring-red-800"
-            @click="clearProgress"
-          >
-            清除进度
-          </button>
+        <div v-if="isTrainingModel">
+          <!-- 移动端按钮网格 -->
+          <div v-if="isMobile" class="grid grid-cols-2 gap-2 md:grid-cols-5 sm:grid-cols-3">
+            <button
+              type="button"
+              class="bg-blue-700 text-white mobile-button dark:bg-blue-600 hover:bg-blue-800 focus:ring-blue-300 dark:hover:bg-blue-700 dark:focus:ring-blue-800"
+              @click="isFinishTraining = true"
+            >
+              ✅ 完成练习
+            </button>
+            <button
+              type="button"
+              class="bg-blue-700 text-white mobile-button dark:bg-blue-600 hover:bg-blue-800 focus:ring-blue-300 dark:hover:bg-blue-700 dark:focus:ring-blue-800"
+              @click="isOnlyShowErrors = !isOnlyShowErrors"
+            >
+              {{ isOnlyShowErrors ? '👁️ 展示所有' : '👁️ 仅错词' }}
+            </button>
+            <button
+              type="button"
+              class="bg-blue-700 text-white mobile-button dark:bg-blue-600 hover:bg-blue-800 focus:ring-blue-300 dark:hover:bg-blue-700 dark:focus:ring-blue-800"
+              @click="copyAllError"
+            >
+              📋 拷贝错词
+            </button>
+            <button
+              v-if="isShuffleMode"
+              type="button"
+              class="bg-yellow-600 text-white mobile-button dark:bg-yellow-500 hover:bg-yellow-700 focus:ring-yellow-300 dark:hover:bg-yellow-600 dark:focus:ring-yellow-800"
+              @click="shuffleCurrentPage"
+            >
+              🔀 重新打乱
+            </button>
+            <button
+              type="button"
+              class="bg-red-700 text-white mobile-button dark:bg-red-600 hover:bg-red-800 focus:ring-red-300 dark:hover:bg-red-700 dark:focus:ring-red-800"
+              @click="clearProgress"
+            >
+              🗑️ 清除进度
+            </button>
+          </div>
+          <!-- 桌面端按钮行 -->
+          <div v-else class="flex flex-wrap gap-2">
+            <button
+              type="button"
+              class="rounded-lg bg-blue-700 px-5 py-2.5 text-sm font-medium text-white dark:bg-blue-600 hover:bg-blue-800 focus:outline-none focus:ring-4 focus:ring-blue-300 dark:hover:bg-blue-700 dark:focus:ring-blue-800"
+              @click="isFinishTraining = true"
+            >
+              完成练习
+            </button>
+            <button
+              type="button"
+              class="rounded-lg bg-blue-700 px-5 py-2.5 text-sm font-medium text-white dark:bg-blue-600 hover:bg-blue-800 focus:outline-none focus:ring-4 focus:ring-blue-300 dark:hover:bg-blue-700 dark:focus:ring-blue-800"
+              @click="isOnlyShowErrors = !isOnlyShowErrors"
+            >
+              {{ isOnlyShowErrors ? '展示所有' : '仅展示错词' }}
+            </button>
+            <button
+              type="button"
+              class="rounded-lg bg-blue-700 px-5 py-2.5 text-sm font-medium text-white dark:bg-blue-600 hover:bg-blue-800 focus:outline-none focus:ring-4 focus:ring-blue-300 dark:hover:bg-blue-700 dark:focus:ring-blue-800"
+              @click="copyAllError"
+            >
+              拷贝错词
+            </button>
+            <button
+              v-if="isShuffleMode"
+              type="button"
+              class="rounded-lg bg-yellow-600 px-5 py-2.5 text-sm font-medium text-white dark:bg-yellow-500 hover:bg-yellow-700 focus:outline-none focus:ring-4 focus:ring-yellow-300 dark:hover:bg-yellow-600 dark:focus:ring-yellow-800"
+              @click="shuffleCurrentPage"
+            >
+              重新打乱
+            </button>
+            <button
+              type="button"
+              class="rounded-lg bg-red-700 px-5 py-2.5 text-sm font-medium text-white dark:bg-red-600 hover:bg-red-800 focus:outline-none focus:ring-4 focus:ring-red-300 dark:hover:bg-red-700 dark:focus:ring-red-800"
+              @click="clearProgress"
+            >
+              清除进度
+            </button>
+          </div>
         </div>
       </div>
     </div>
   </div>
 
   <!-- 添加生词弹窗 -->
-  <div v-if="isShowAddWordDialog" class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
-    <div class="relative mx-4 max-h-[90vh] max-w-2xl w-full overflow-auto rounded-lg bg-white shadow-xl dark:bg-gray-800">
+  <div v-if="isShowAddWordDialog" class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 p-2 sm:p-4">
+    <div class="relative mx-auto max-h-[90vh] max-w-2xl w-full overflow-auto rounded-lg bg-white shadow-xl dark:bg-gray-800">
       <!-- 弹窗头部 -->
       <div class="sticky top-0 flex items-center justify-between border-b border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-800">
         <h3 class="text-lg font-semibold text-gray-900 dark:text-white">
@@ -1082,28 +1412,28 @@ watch(category, () => {
             <input
               v-model="newWord.word"
               placeholder="单词（多个单词用逗号分隔）"
-              class="border border-gray-300 rounded-lg bg-white p-3 text-sm text-gray-900 dark:border-gray-600 focus:border-blue-500 dark:bg-gray-700 dark:text-white focus:ring-blue-500 dark:placeholder-gray-400"
+              class="mobile-input"
             >
             <input
               v-model="newWord.pos"
               placeholder="词性（如：n. v. adj.）"
-              class="border border-gray-300 rounded-lg bg-white p-3 text-sm text-gray-900 dark:border-gray-600 focus:border-blue-500 dark:bg-gray-700 dark:text-white focus:ring-blue-500 dark:placeholder-gray-400"
+              class="mobile-input"
             >
             <input
               v-model="newWord.meaning"
               placeholder="中文释义"
-              class="border border-gray-300 rounded-lg bg-white p-3 text-sm text-gray-900 sm:col-span-2 dark:border-gray-600 focus:border-blue-500 dark:bg-gray-700 dark:text-white focus:ring-blue-500 dark:placeholder-gray-400"
+              class="sm:col-span-2 mobile-input"
             >
             <input
               v-model="newWord.example"
               placeholder="例句（可选）"
-              class="border border-gray-300 rounded-lg bg-white p-3 text-sm text-gray-900 sm:col-span-2 dark:border-gray-600 focus:border-blue-500 dark:bg-gray-700 dark:text-white focus:ring-blue-500 dark:placeholder-gray-400"
+              class="sm:col-span-2 mobile-input"
             >
           </div>
           <div class="mt-4 flex justify-end">
             <button
               type="button"
-              class="rounded-lg bg-blue-600 px-6 py-2.5 text-sm font-medium text-white dark:bg-blue-500 hover:bg-blue-700 focus:outline-none focus:ring-4 focus:ring-blue-300 dark:hover:bg-blue-600"
+              class="bg-blue-600 text-white mobile-button dark:bg-blue-500 hover:bg-blue-700 focus:ring-blue-300 dark:hover:bg-blue-600 dark:focus:ring-blue-800"
               @click="addNewWord"
             >
               ➕ 添加单词
