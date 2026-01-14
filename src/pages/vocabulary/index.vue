@@ -4,7 +4,16 @@ import vocabulary from './vocabulary'
 
 const CHAPTER_KEY = 'vocabulary_chapter'
 const PROGRESS_KEY = 'vocabulary_progress'
+const CHAPTER_STATUS_KEY = 'vocabulary_chapter_status' // 章节学习状态
 const MASTERY_COUNT = 10 // 正确10次后隐藏
+
+// 章节学习状态枚举
+const ChapterStatus = {
+  NOT_LEARNED: 'not_learned',   // 未学习
+  LEARNED: 'learned',           // 已学习
+  COMPLETED: 'completed',        // 已完成
+  MASTERED: 'mastered',          // 已熟练
+}
 
 const isTrainingModel = ref(false)
 const isShowMeaning = ref(true)
@@ -15,7 +24,10 @@ const isShowSource = ref(false)
 const isHideMastered = ref(false)
 const isShuffleMode = ref(false)
 const isShowAddWordDialog = ref(false)
+const showChapterStatusDialog = ref(false) // 显示章节状态设置对话框
 const currentPage = ref(1)
+const statusFilter = ref('all') // 状态筛选：all, not_learned, learned, completed, mastered
+const chapterLearnStatus = ref({}) // 章节学习状态映射
 const wordsPerPage = ref(Math.max(1, Number.parseInt(localStorage.getItem('vocabulary_words_per_page') || '5', 10))) // 每页显示组数，默认5组
 
 
@@ -71,6 +83,49 @@ const totalPages = computed(() => {
 
   // 正常模式：按组数计算
   return Math.ceil(groups.length / wordsPerPage.value)
+})
+
+// 章节学习状态：计算每个章节的学习进度
+const chapterStatus = computed(() => {
+  const status = {}
+  for (const chapterName of chapters) {
+    const chapter = refVocabulary[chapterName]
+    if (!chapter || !chapter.words) {
+      status[chapterName] = { progress: 0, mastered: 0, total: 0, label: chapterName }
+      continue
+    }
+
+    let total = 0
+    let mastered = 0
+
+    for (const group of chapter.words) {
+      for (const item of group) {
+        total++
+        if ((item.correctCount || 0) >= MASTERY_COUNT)
+          mastered++
+      }
+    }
+
+    const progress = total > 0 ? Math.round((mastered / total) * 100) : 0
+    status[chapterName] = {
+      progress,
+      mastered,
+      total,
+      label: chapterName,
+    }
+  }
+  return status
+})
+
+// 过滤后的章节列表
+const filteredChapters = computed(() => {
+  if (statusFilter.value === 'all')
+    return chapters
+
+  return chapters.filter(chapterName => {
+    const status = chapterLearnStatus.value[chapterName] || ChapterStatus.NOT_LEARNED
+    return status === statusFilter.value
+  })
 })
 
 const wordList = computed(() => {
@@ -167,6 +222,75 @@ function loadProgress() {
   }
 }
 
+// 保存章节学习状态
+function saveChapterStatus() {
+  localStorage.setItem(CHAPTER_STATUS_KEY, JSON.stringify(chapterLearnStatus.value))
+}
+
+// 加载章节学习状态
+function loadChapterStatus() {
+  const saved = localStorage.getItem(CHAPTER_STATUS_KEY)
+  if (saved) {
+    try {
+      chapterLearnStatus.value = JSON.parse(saved)
+    }
+    catch (error) {
+      console.error('加载章节状态失败:', error)
+    }
+  }
+}
+
+// 设置章节学习状态
+function setChapterStatus(chapterName, status) {
+  chapterLearnStatus.value[chapterName] = status
+  saveChapterStatus()
+}
+
+// 获取章节状态文本
+function getStatusText(status) {
+  const statusMap = {
+    [ChapterStatus.NOT_LEARNED]: '未学习',
+    [ChapterStatus.LEARNED]: '已学习',
+    [ChapterStatus.COMPLETED]: '已完成',
+    [ChapterStatus.MASTERED]: '已熟练',
+  }
+  return statusMap[status] || '未学习'
+}
+
+// 获取章节状态图标
+function getStatusIcon(status) {
+  const iconMap = {
+    [ChapterStatus.NOT_LEARNED]: '○',
+    [ChapterStatus.LEARNED]: '◑',
+    [ChapterStatus.COMPLETED]: '◐',
+    [ChapterStatus.MASTERED]: '●',
+  }
+  return iconMap[status] || '○'
+}
+
+// 获取章节状态颜色类
+function getStatusColorClass(status) {
+  const colorMap = {
+    [ChapterStatus.NOT_LEARNED]: 'text-gray-500',
+    [ChapterStatus.LEARNED]: 'text-blue-500',
+    [ChapterStatus.COMPLETED]: 'text-orange-500',
+    [ChapterStatus.MASTERED]: 'text-green-500',
+  }
+  return colorMap[status] || 'text-gray-500'
+}
+
+// 获取章节下拉选项文本
+function getChapterOptionText(chapterName) {
+  const status = chapterLearnStatus.value[chapterName] || ChapterStatus.NOT_LEARNED
+  return `${getStatusIcon(status)} ${chapterName} (${getStatusText(status)})`
+}
+
+// 获取章节下拉选项颜色类
+function getChapterOptionClass(chapterName) {
+  const status = chapterLearnStatus.value[chapterName] || ChapterStatus.NOT_LEARNED
+  return getStatusColorClass(status)
+}
+
 function calcStats() {
   let error = 0
   let missing = 0
@@ -224,6 +348,9 @@ onMounted(() => {
 
   // 加载练习进度
   loadProgress()
+
+  // 加载章节学习状态
+  loadChapterStatus()
 
   // 只能同时播放一个音频
   const audioTags = document.getElementsByTagName('audio')
@@ -858,10 +985,29 @@ watch(category, () => {
               <!-- <option value="">
                 全部章节
               </option> -->
-              <option v-for="(_, k) in refVocabulary" :key="k" :value="k">
-                {{ k }}
+              <option v-for="k in filteredChapters" :key="k" :value="k" :class="getChapterOptionClass(k)">
+                {{ getChapterOptionText(k) }}
               </option>
             </select>
+            <!-- 状态筛选 -->
+            <select
+              v-model="statusFilter"
+              class="block w-32 text-sm mobile-input"
+            >
+              <option value="all">全部</option>
+              <option value="not_learned">未学习</option>
+              <option value="learned">已学习</option>
+              <option value="completed">已完成</option>
+              <option value="mastered">已熟练</option>
+            </select>
+            <!-- 章节状态设置按钮 -->
+            <button
+              type="button"
+              class="bg-purple-600 text-white mobile-button dark:bg-purple-500 hover:bg-purple-700 focus:ring-purple-300 dark:hover:bg-purple-600 dark:focus:ring-purple-800"
+              @click="showChapterStatusDialog = true"
+            >
+              📚 标记章节
+            </button>
             <button
               type="button"
               class="bg-indigo-600 text-white mobile-button dark:bg-indigo-500 hover:bg-indigo-700 focus:ring-indigo-300 dark:hover:bg-indigo-600 dark:focus:ring-indigo-800"
@@ -1376,6 +1522,90 @@ watch(category, () => {
             >
               清除进度
             </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 章节状态设置弹窗 -->
+  <div v-if="showChapterStatusDialog" class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 p-2 sm:p-4">
+    <div class="relative mx-auto max-h-[90vh] max-w-4xl w-full overflow-auto rounded-lg bg-white shadow-xl dark:bg-gray-800">
+      <!-- 弹窗头部 -->
+      <div class="sticky top-0 flex items-center justify-between border-b border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-800">
+        <h3 class="text-lg font-semibold text-gray-900 dark:text-white">
+          📚 章节学习状态设置
+        </h3>
+        <button
+          type="button"
+          class="rounded-lg bg-transparent p-1.5 text-sm text-gray-400 hover:bg-gray-100 hover:text-gray-900 dark:hover:bg-gray-700 dark:hover:text-white"
+          @click="showChapterStatusDialog = false"
+        >
+          <svg class="h-5 w-5" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
+            <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd" />
+          </svg>
+        </button>
+      </div>
+
+      <!-- 弹窗内容 -->
+      <div class="p-6">
+        <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          <div
+            v-for="chapterName in chapters"
+            :key="chapterName"
+            class="flex items-center justify-between rounded-lg border border-gray-200 p-4 dark:border-gray-600"
+          >
+            <div class="flex-1">
+              <div class="font-medium text-gray-900 dark:text-white">
+                {{ chapterName }}
+              </div>
+              <div class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                当前状态: <span :class="getStatusColorClass(chapterLearnStatus[chapterName])">{{ getStatusText(chapterLearnStatus[chapterName]) }}</span>
+              </div>
+            </div>
+            <select
+              :value="chapterLearnStatus[chapterName] || ChapterStatus.NOT_LEARNED"
+              class="ml-4 block w-32 text-sm border border-gray-300 rounded-lg bg-gray-50 p-2 text-gray-900 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
+              @change="setChapterStatus(chapterName, $event.target.value)"
+            >
+              <option :value="ChapterStatus.NOT_LEARNED">未学习</option>
+              <option :value="ChapterStatus.LEARNED">已学习</option>
+              <option :value="ChapterStatus.COMPLETED">已完成</option>
+              <option :value="ChapterStatus.MASTERED">已熟练</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- 统计信息 -->
+        <div class="mt-6 rounded-lg bg-gray-50 p-4 dark:bg-gray-700">
+          <h4 class="mb-3 text-lg font-medium text-gray-900 dark:text-white">
+            学习进度统计
+          </h4>
+          <div class="grid grid-cols-2 gap-4 sm:grid-cols-4">
+            <div class="text-center">
+              <div class="text-2xl font-bold text-gray-500 dark:text-gray-400">
+                {{ Object.keys(chapterLearnStatus).filter(k => chapterLearnStatus[k] === ChapterStatus.NOT_LEARNED).length }}
+              </div>
+              <div class="text-sm text-gray-600 dark:text-gray-400">未学习</div>
+            </div>
+            <div class="text-center">
+              <div class="text-2xl font-bold text-blue-500 dark:text-blue-400">
+                {{ Object.keys(chapterLearnStatus).filter(k => chapterLearnStatus[k] === ChapterStatus.LEARNED).length }}
+              </div>
+              <div class="text-sm text-blue-600 dark:text-blue-400">已学习</div>
+            </div>
+            <div class="text-center">
+              <div class="text-2xl font-bold text-orange-500 dark:text-orange-400">
+                {{ Object.keys(chapterLearnStatus).filter(k => chapterLearnStatus[k] === ChapterStatus.COMPLETED).length }}
+              </div>
+              <div class="text-sm text-orange-600 dark:text-orange-400">已完成</div>
+            </div>
+            <div class="text-center">
+              <div class="text-2xl font-bold text-green-500 dark:text-green-400">
+                {{ Object.keys(chapterLearnStatus).filter(k => chapterLearnStatus[k] === ChapterStatus.MASTERED).length }}
+              </div>
+              <div class="text-sm text-green-600 dark:text-green-400">已熟练</div>
+            </div>
           </div>
         </div>
       </div>
