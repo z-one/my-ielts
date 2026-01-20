@@ -1,9 +1,13 @@
 <script setup lang="ts" generic="T extends any, O extends any">
 import { RouterLink } from 'vue-router'
+import { useAuthStore } from '~/stores/auth'
 
 defineOptions({
   name: 'IndexPage',
 })
+
+const authStore = useAuthStore()
+const isAuthenticated = computed(() => authStore.isAuthenticated)
 
 const menus = reactive([
   {
@@ -49,9 +53,39 @@ const menus = reactive([
   <div class="px-4 pt-6 2xl:px-0">
     <section class="mb-4 border border-gray-200 rounded-lg bg-white p-4 shadow-sm dark:border-gray-700 dark:bg-gray-800 sm:p-6">
       <div class="mx-auto max-w-screen-xl px-4 py-8 lg:px-6 sm:py-16">
-        <h1 style="font-family: Charmonman;" class="mb-16 text-center text-6xl text-gray-900 dark:text-white">
-          Salvation lies within <span class="font-bold text-#f00">IELTS</span>
-        </h1>
+        <!-- 用户登录/注册按钮区域 -->
+        <div class="mb-8 flex items-center justify-between">
+          <h1 style="font-family: Charmonman;" class="text-center text-4xl text-gray-900 dark:text-white sm:text-6xl">
+            Salvation lies within <span class="font-bold text-#f00">IELTS</span>
+          </h1>
+          <div class="flex gap-3">
+            <template v-if="!isAuthenticated">
+              <RouterLink
+                to="/login"
+                class="rounded-lg bg-blue-600 px-4 py-2 text-white hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600"
+              >
+                登录
+              </RouterLink>
+              <RouterLink
+                to="/register"
+                class="rounded-lg border border-blue-600 px-4 py-2 text-blue-600 hover:bg-blue-50 dark:border-blue-500 dark:text-blue-400 dark:hover:bg-blue-900/20"
+              >
+                注册
+              </RouterLink>
+            </template>
+            <template v-else>
+              <span class="text-gray-600 dark:text-gray-300">
+                你好，{{ authStore.user?.username }}
+              </span>
+              <button
+                @click="authStore.logout"
+                class="rounded-lg border border-gray-300 px-4 py-2 text-gray-600 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
+              >
+                退出
+              </button>
+            </template>
+          </div>
+        </div>
         <div class="mb-8 max-w-screen-md lg:mb-16">
           <h2 class="mb-4 text-4xl font-extrabold tracking-tight text-gray-900 dark:text-white">
             我的 IELTS 备考中心

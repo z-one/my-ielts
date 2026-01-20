@@ -1,6 +1,10 @@
 <!-- eslint-disable eslint-comments/no-unlimited-disable -->
 <script setup generic="T extends any, O extends any">
+import { loadWordProgress as loadWordProgressFromBackend, syncUserSettings, syncWordProgress, updateChapterStatus } from '../../services/sync'
 import vocabulary from './vocabulary'
+import { useAuthStore } from '~/stores/auth'
+
+const authStore = useAuthStore()
 
 const CHAPTER_KEY = 'vocabulary_chapter'
 const PROGRESS_KEY = 'vocabulary_progress'
@@ -9,10 +13,10 @@ const MASTERY_COUNT = 10 // 正确10次后隐藏
 
 // 章节学习状态枚举
 const ChapterStatus = {
-  NOT_LEARNED: 'not_learned',   // 未学习
-  LEARNED: 'learned',           // 已学习
-  COMPLETED: 'completed',        // 已完成
-  MASTERED: 'mastered',          // 已熟练
+  NOT_LEARNED: 'not_learned', // 未学习
+  LEARNED: 'learned', // 已学习
+  COMPLETED: 'completed', // 已完成
+  MASTERED: 'mastered', // 已熟练
 }
 
 const isTrainingModel = ref(false)
@@ -28,9 +32,13 @@ const showChapterStatusDialog = ref(false) // 显示章节状态设置对话框
 const currentPage = ref(1)
 const statusFilter = ref('all') // 状态筛选：all, not_learned, learned, completed, mastered
 const chapterLearnStatus = ref({}) // 章节学习状态映射
+const focusLevelFilter = ref('all') // 关注等级筛选：all, 0, 1, 2
 const wordsPerPage = ref(Math.max(1, Number.parseInt(localStorage.getItem('vocabulary_words_per_page') || '5', 10))) // 每页显示组数，默认5组
 
-
+// 使用 Map 存储每个单词的 showSource 状态，确保响应性
+const wordShowSourceMap = reactive(new Map())
+// 使用 Map 存储每个单词是否已经输入过，用于控制样式显示
+const wordHasInputMap = reactive(new Map())
 
 const trainingStats = ref('')
 const keyword = ref('')
@@ -38,14 +46,33 @@ const chapters = Object.keys(vocabulary)
 const category = ref(localStorage.getItem(CHAPTER_KEY) || chapters[0])
 
 const loaded = ref(false)
-const refVocabulary = reactive(vocabulary)
+const refVocabulary = shallowReactive(vocabulary)
+
+// 获取经过筛选后的所有组（用于分页计算）
+const filteredWordGroups = computed(() => {
+  const groups = refVocabulary[category.value]?.words || []
+
+  // 如果是错词模式，返回包含错词的组
+  if (isTrainingModel.value && isOnlyShowErrors.value) {
+    return groups.filter(group => group.some(item => item.spellError))
+  }
+
+  // 正常模式：过滤掉不匹配关注等级的组（如果组内没有符合条件的单词）
+  if (focusLevelFilter.value !== 'all') {
+    const filterLevel = Number.parseInt(focusLevelFilter.value)
+    return groups.filter(group =>
+      group.some(item => (item.focusLevel ?? 0) === filterLevel),
+    )
+  }
+
+  return groups
+})
 
 // 获取当前显示的单词组
 const currentWordGroups = computed(() => {
-  const groups = refVocabulary[category.value]?.words || []
-
-  // 如果是错词模式，返回所有错词扁平化后的数组
+  // 错词模式：返回所有错词扁平化后的数组
   if (isTrainingModel.value && isOnlyShowErrors.value) {
+    const groups = refVocabulary[category.value]?.words || []
     const allErrorWords = []
     for (const group of groups) {
       const errorWords = group.filter(item => item.spellError)
@@ -54,10 +81,10 @@ const currentWordGroups = computed(() => {
     return allErrorWords.length > 0 ? allErrorWords : [[]]
   }
 
-  // 正常分页逻辑
+  // 正常模式：从筛选后的组中分页
   const start = (currentPage.value - 1) * wordsPerPage.value
   const end = start + wordsPerPage.value
-  let pageGroups = groups.slice(start, end)
+  let pageGroups = filteredWordGroups.value.slice(start, end)
 
   // 如果开启打乱模式，打乱每组内部的单词顺序
   if (isShuffleMode.value) {
@@ -75,14 +102,12 @@ const currentWordGroups = computed(() => {
 })
 
 const totalPages = computed(() => {
-  const groups = refVocabulary[category.value]?.words || []
-
   // 错词模式：所有错词作为一页
   if (isTrainingModel.value && isOnlyShowErrors.value)
     return 1
 
-  // 正常模式：按组数计算
-  return Math.ceil(groups.length / wordsPerPage.value)
+  // 正常模式：按筛选后的组数计算
+  return Math.ceil(filteredWordGroups.value.length / wordsPerPage.value)
 })
 
 // 章节学习状态：计算每个章节的学习进度
@@ -122,7 +147,7 @@ const filteredChapters = computed(() => {
   if (statusFilter.value === 'all')
     return chapters
 
-  return chapters.filter(chapterName => {
+  return chapters.filter((chapterName) => {
     const status = chapterLearnStatus.value[chapterName] || ChapterStatus.NOT_LEARNED
     return status === statusFilter.value
   })
@@ -156,16 +181,37 @@ const wordList = computed(() => {
   return {}
 })
 
-watch(category, (newVal, oldVal) => {
+watch(category, async (newVal, oldVal) => {
   // console.log(newVal, oldVal)
   localStorage.setItem(CHAPTER_KEY, newVal)
+
+  // 切换章节时加载进度
+  if (authStore.isAuthenticated) {
+    // 已登录：先尝试从后端加载
+    try {
+      const backendProgress = await loadWordProgressFromBackend(newVal)
+      if (backendProgress) {
+        // 后端有数据，使用后端数据
+        applyProgress(backendProgress)
+      }
+      else {
+        // 后端没有数据，使用本地数据
+        await loadProgress()
+      }
+    }
+    catch (error) {
+      console.error('从后端加载进度失败:', error)
+      await loadProgress()
+    }
+  }
+  else {
+    // 未登录：使用本地数据
+    await loadProgress()
+  }
 })
 
 // 保存练习进度
-function saveProgress() {
-  if (!isTrainingModel.value)
-    return
-
+async function saveProgress() {
   const progress = {
     chapter: category.value,
     words: {},
@@ -175,19 +221,69 @@ function saveProgress() {
   const words = refVocabulary[category.value].words
   for (const group of words) {
     for (const item of group) {
-      if (item.spellValue !== undefined || item.spellError !== undefined || item.correctCount !== undefined || item.errorCount !== undefined) {
+      // 保存所有有自定义属性的数据（包括 focusLevel）
+      // 从 Map 中获取 showSource 状态
+      const showSource = wordShowSourceMap.get(item.id) || false
+      // 同步到 item 对象
+      item.showSource = showSource
+      if (item.spellValue !== undefined || item.spellError !== undefined || item.correctCount !== undefined || item.errorCount !== undefined || item.focusLevel !== undefined || showSource !== undefined) {
         progress.words[item.id] = {
           spellValue: item.spellValue || '',
           spellError: item.spellError || false,
           correctCount: item.correctCount || 0,
           errorCount: item.errorCount || 0,
-          showSource: item.showSource || false,
+          showSource: showSource || false,
+          focusLevel: item.focusLevel ?? 0,
         }
       }
     }
   }
 
   localStorage.setItem(PROGRESS_KEY, JSON.stringify(progress))
+
+  // 同步到后端
+  if (authStore.isAuthenticated) {
+    try {
+      await syncWordProgress(category.value)
+    }
+    catch (error) {
+      console.error('同步单词进度失败:', error)
+    }
+  }
+}
+
+// 应用进度数据到单词（用于后端加载的数据）
+function applyProgress(progress) {
+  if (progress.chapter !== category.value)
+    return
+
+  // console.log('应用进度数据:', progress)
+  // console.log('当前章节:', category.value)
+
+  const words = refVocabulary[category.value].words
+  let appliedCount = 0
+
+  for (const group of words) {
+    for (const item of group) {
+      const saved = progress.words[item.id]
+      if (saved) {
+        // console.log(`单词 ${item.id} 应用数据:`, saved)
+        // 注意：spellValue 保持原值，不使用单词原词（练习模式下不应该显示原词）
+        item.spellValue = saved.spellValue || ''
+        item.spellError = saved.spellError
+        item.correctCount = saved.correctCount || 0
+        item.errorCount = saved.errorCount || 0
+        item.showSource = saved.showSource || false
+        item.focusLevel = saved.focusLevel ?? 0
+        // 将 showSource 同步到 Map
+        wordShowSourceMap.set(item.id, saved.showSource || false)
+        // console.log(`单词 ${item.id} 应用后 spellValue:`, item.spellValue)
+        appliedCount++
+      }
+    }
+  }
+
+  // console.log(`共应用了 ${appliedCount} 个单词的进度`)
 }
 
 // 加载练习进度
@@ -198,23 +294,7 @@ function loadProgress() {
 
   try {
     const progress = JSON.parse(savedProgress)
-    if (progress.chapter !== category.value)
-      return
-
-    const words = refVocabulary[category.value].words
-    for (const group of words) {
-      for (const item of group) {
-        const saved = progress.words[item.id]
-        if (saved) {
-          item.spellValue = saved.spellValue
-          item.spellError = saved.spellError
-          item.correctCount = saved.correctCount || 0
-          item.errorCount = saved.errorCount || 0
-          item.showSource = saved.showSource || false
-        }
-      }
-    }
-
+    applyProgress(progress)
     trainingStats.value = calcStats()
   }
   catch (error) {
@@ -241,9 +321,19 @@ function loadChapterStatus() {
 }
 
 // 设置章节学习状态
-function setChapterStatus(chapterName, status) {
+async function setChapterStatus(chapterName, status) {
   chapterLearnStatus.value[chapterName] = status
   saveChapterStatus()
+
+  // 同步到后端
+  if (authStore.isAuthenticated) {
+    try {
+      await updateChapterStatus(chapterName, status)
+    }
+    catch (error) {
+      console.error('同步章节状态失败:', error)
+    }
+  }
 }
 
 // 获取章节状态文本
@@ -291,6 +381,95 @@ function getChapterOptionClass(chapterName) {
   return getStatusColorClass(status)
 }
 
+// 获取关注等级文本
+function getFocusLevelText(level) {
+  const levelMap = {
+    0: '普通',
+    1: '关注',
+    2: '重点',
+  }
+  return levelMap[level] || '普通'
+}
+
+// 获取关注等级颜色类
+function getFocusLevelColorClass(level) {
+  const colorMap = {
+    0: 'text-gray-500 bg-gray-100 dark:bg-gray-700 dark:text-gray-400',
+    1: 'text-blue-600 bg-blue-100 dark:bg-blue-900/30 dark:text-blue-400',
+    2: 'text-red-600 bg-red-100 dark:bg-red-900/30 dark:text-red-400',
+  }
+  return colorMap[level] || colorMap[0]
+}
+
+// 获取关注等级边框类
+function getFocusLevelBorderClass(level) {
+  const colorMap = {
+    0: 'border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800',
+    1: 'border-blue-300 dark:border-blue-600 bg-blue-50 dark:bg-blue-900/20',
+    2: 'border-red-300 dark:border-red-600 bg-red-50 dark:bg-red-900/20',
+  }
+  return colorMap[level] || colorMap[0]
+}
+
+// 防抖保存定时器
+let saveProgressTimer = null
+
+// 设置单词关注等级
+function setWordFocusLevel(item, level) {
+  item.focusLevel = level
+  // 使用防抖延迟保存，避免频繁操作导致音频中断
+  if (saveProgressTimer)
+    clearTimeout(saveProgressTimer)
+
+  saveProgressTimer = setTimeout(() => {
+    saveProgress()
+    saveProgressTimer = null
+  }, 1000) // 1秒后保存
+}
+
+// 切换单词原词显示
+function toggleShowSource(item) {
+  const currentValue = wordShowSourceMap.get(item.id) || false
+  wordShowSourceMap.set(item.id, !currentValue)
+  // 保存进度
+  saveProgress()
+}
+
+// 判断是否显示原词
+function shouldShowWordSource(item) {
+  // 非练习模式：总是显示
+  if (!isTrainingModel.value)
+    return true
+  // 练习模式：根据 Map 中的 showSource 或全局 isShowSource 判断
+  return !!(wordShowSourceMap.get(item.id) || isShowSource.value)
+}
+
+// 保存所有章节的进度（包含 focusLevel）
+function saveAllChaptersProgress() {
+  const progress = {
+    chapter: category.value,
+    words: {},
+  }
+
+  // 遍历当前章节所有单词
+  const words = refVocabulary[category.value].words
+  for (const group of words) {
+    for (const item of group) {
+      // 保存所有自定义属性
+      progress.words[item.id] = {
+        spellValue: item.spellValue || '',
+        spellError: item.spellError || false,
+        correctCount: item.correctCount || 0,
+        errorCount: item.errorCount || 0,
+        showSource: item.showSource || false,
+        focusLevel: item.focusLevel ?? 0,
+      }
+    }
+  }
+
+  localStorage.setItem(PROGRESS_KEY, JSON.stringify(progress))
+}
+
 function calcStats() {
   let error = 0
   let missing = 0
@@ -330,7 +509,7 @@ const isMobile = ref(false)
 const touchStartY = ref(0)
 const touchEndY = ref(0)
 
-onMounted(() => {
+onMounted(async () => {
   loaded.value = true
 
   // 检测是否为移动设备
@@ -347,7 +526,24 @@ onMounted(() => {
   initCustomWords()
 
   // 加载练习进度
-  loadProgress()
+  if (authStore.isAuthenticated) {
+    // 已登录：先尝试从后端加载
+    try {
+      const backendProgress = await loadWordProgressFromBackend(category.value)
+      if (backendProgress)
+        applyProgress(backendProgress)
+      else
+        loadProgress()
+    }
+    catch (error) {
+      console.error('从后端加载进度失败:', error)
+      loadProgress()
+    }
+  }
+  else {
+    // 未登录：使用本地数据
+    loadProgress()
+  }
 
   // 加载章节学习状态
   loadChapterStatus()
@@ -450,7 +646,7 @@ function play(audioPath) {
     audio = new Audio()
     audio.src = audioPath
     audio.play().catch((error) => {
-      console.log('音频播放失败:', error)
+      // console.log('音频播放失败:', error)
       // 移动端可能需要用户交互才能播放
       if (isMobile.value) {
         // 可以在这里显示提示，让用户点击播放
@@ -463,8 +659,6 @@ function play(audioPath) {
     console.error('音频创建失败:', error)
   }
 }
-
-
 
 function copyText(item) {
   const text = `${item.word} ${item.pos} ${item.meaning}`
@@ -534,8 +728,8 @@ function getInputStyleClass(item) {
     normal: 'w-full sm:w-auto ml-0 sm:ml-4 inline-block border border-gray-300 rounded-lg bg-gray-50 p-2.5 text-sm text-gray-900 dark:border-gray-600 focus:border-blue-500 dark:bg-gray-700 dark:text-white focus:ring-blue-500 dark:focus:border-blue-500 dark:focus:ring-blue-500 dark:placeholder-gray-400',
     success: 'w-full sm:w-auto ml-0 sm:ml-4 bg-green-50 border border-green-500 text-green-900 dark:text-green-400 placeholder-green-700 dark:placeholder-green-500 text-sm rounded-lg focus:ring-green-500 focus:border-green-500 inline-block p-2.5 dark:bg-gray-700 dark:border-green-500',
   }
-  // 在练习模式下，实时显示验证结果
-  if (isTrainingModel.value) {
+  // 在练习模式下，只有在用户输入过之后才显示验证结果
+  if (isTrainingModel.value && wordHasInputMap.get(item.id)) {
     if (item.spellError)
       return cls.error
     if (item.spellValue && item.spellValue.length > 0 && !item.spellError)
@@ -594,6 +788,13 @@ function copyAllError() {
 }
 
 function shouldShowWord(item) {
+  // 关注等级筛选（在所有模式下都生效）
+  if (focusLevelFilter.value !== 'all') {
+    const level = item.focusLevel ?? 0
+    if (level !== Number.parseInt(focusLevelFilter.value))
+      return false
+  }
+
   // 非练习模式：显示所有单词
   if (!isTrainingModel.value)
     return true
@@ -786,15 +987,19 @@ function getVisiblePages() {
 }
 
 // 监听每页组数变化，保存到本地存储并重置页码
-watch(wordsPerPage, (newValue) => {
+watch(wordsPerPage, async (newValue) => {
   localStorage.setItem('vocabulary_words_per_page', newValue.toString())
   currentPage.value = 1 // 重置到第一页
-})
 
-// 监听每页组数变化，保存到本地存储并重置页码
-watch(wordsPerPage, (newValue) => {
-  localStorage.setItem('vocabulary_words_per_page', newValue.toString())
-  currentPage.value = 1 // 重置到第一页
+  // 同步用户设置到后端
+  if (authStore.isAuthenticated) {
+    try {
+      await syncUserSettings()
+    }
+    catch (error) {
+      console.error('同步用户设置失败:', error)
+    }
+  }
 })
 
 // 初始化单词属性
@@ -804,8 +1009,19 @@ function initWordProperties() {
     if (chapter.words) {
       for (const group of chapter.words) {
         for (const item of group) {
-          if (item.showSource === undefined)
+          // 初始化所有进度相关的属性，确保响应性
+          if ('showSource' in item === false)
             item.showSource = false
+          if ('spellValue' in item === false)
+            item.spellValue = ''
+          if ('spellError' in item === false)
+            item.spellError = false
+          if ('correctCount' in item === false)
+            item.correctCount = 0
+          if ('errorCount' in item === false)
+            item.errorCount = 0
+          if ('focusLevel' in item === false)
+            item.focusLevel = 0
         }
       }
     }
@@ -848,8 +1064,18 @@ function initCustomWords() {
   if (customChapter.words) {
     for (const group of customChapter.words) {
       for (const item of group) {
-        if (item.showSource === undefined)
+        if ('showSource' in item === false)
           item.showSource = false
+        if ('spellValue' in item === false)
+          item.spellValue = ''
+        if ('spellError' in item === false)
+          item.spellError = false
+        if ('correctCount' in item === false)
+          item.correctCount = 0
+        if ('errorCount' in item === false)
+          item.errorCount = 0
+        if ('focusLevel' in item === false)
+          item.focusLevel = 0
       }
     }
   }
@@ -961,6 +1187,31 @@ function clearCustomWords() {
 watch(category, () => {
   currentPage.value = 1
 })
+
+// 监听状态筛选变化
+watch(statusFilter, (newStatus) => {
+  if (newStatus !== 'all') {
+    // 如果当前选择的章节不在过滤后的列表中，切换到第一个符合条件的章节
+    if (!filteredChapters.value.includes(category.value)) {
+      category.value = filteredChapters.value[0] || chapters[0]
+    }
+  }
+})
+
+// 监听练习模式切换
+watch(isTrainingModel, (newValue) => {
+  if (newValue) {
+    // 进入练习模式时，重置全局原词开关、单词显示状态和输入状态
+    isShowSource.value = false
+    wordShowSourceMap.clear()
+    wordHasInputMap.clear()
+  }
+  else {
+    // 退出练习模式时，清空单词显示状态和输入状态
+    wordShowSourceMap.clear()
+    wordHasInputMap.clear()
+  }
+})
 </script>
 
 <template>
@@ -994,11 +1245,39 @@ watch(category, () => {
               v-model="statusFilter"
               class="block w-32 text-sm mobile-input"
             >
-              <option value="all">全部</option>
-              <option value="not_learned">未学习</option>
-              <option value="learned">已学习</option>
-              <option value="completed">已完成</option>
-              <option value="mastered">已熟练</option>
+              <option value="all">
+                全部
+              </option>
+              <option value="not_learned">
+                未学习
+              </option>
+              <option value="learned">
+                已学习
+              </option>
+              <option value="completed">
+                已完成
+              </option>
+              <option value="mastered">
+                已熟练
+              </option>
+            </select>
+            <!-- 关注等级筛选 -->
+            <select
+              v-model="focusLevelFilter"
+              class="block w-32 text-sm mobile-input"
+            >
+              <option value="all">
+                全部等级
+              </option>
+              <option value="0">
+                普通
+              </option>
+              <option value="1">
+                关注
+              </option>
+              <option value="2">
+                重点
+              </option>
             </select>
             <!-- 章节状态设置按钮 -->
             <button
@@ -1124,7 +1403,7 @@ watch(category, () => {
                       第 {{ currentPage }} / {{ totalPages }} 组 (每页{{ wordsPerPage.value }}组)
                     </div>
                     <div v-if="refVocabulary[category]?.audio" class="flex justify-center">
-                      <audio controls class="max-w-xs w-full">
+                      <audio :key="`audio-${category}`" controls class="max-w-xs w-full">
                         <source :src="`vocabulary/audio/${refVocabulary[category].audio}`" type="audio/mpeg">
                       </audio>
                     </div>
@@ -1145,6 +1424,26 @@ watch(category, () => {
                       <div class="flex items-center justify-between">
                         <span class="text-xs text-gray-500"># {{ item.id }}</span>
                         <div class="flex items-center gap-2">
+                          <!-- 关注等级设置：非训练模式才显示 -->
+                          <select
+                            v-if="!isTrainingModel"
+                            :value="item.focusLevel ?? 0"
+                            class="h-6 w-auto border rounded px-1 text-xs text-gray-700 dark:text-gray-200"
+                            :class="getFocusLevelBorderClass(item.focusLevel ?? 0)"
+                            @change="setWordFocusLevel(item, Number.parseInt($event.target.value))"
+                            @click.stop
+                          >
+                            <option :value="0">
+                              普通
+                            </option>
+                            <option :value="1">
+                              关注
+                            </option>
+                            <option :value="2">
+                              重点
+                            </option>
+                          </select>
+
                           <i
                             v-if="refVocabulary[category]?.audio"
                             class="i-ph-speaker-simple-high-bold text-blue-500"
@@ -1153,9 +1452,9 @@ watch(category, () => {
 
                           <template v-if="isTrainingModel">
                             <i
-                              :class="`${item.showSource ? 'i-ph-eye-slash-bold' : 'i-ph-eye-bold'} text-gray-500`"
+                              :class="`${wordShowSourceMap.get(item.id) ? 'i-ph-eye-slash-bold' : 'i-ph-eye-bold'} text-gray-500`"
                               title="显示完整信息"
-                              @click="item.showSource = !item.showSource"
+                              @click.stop="toggleShowSource(item)"
                             />
                           </template>
                         </div>
@@ -1164,7 +1463,7 @@ watch(category, () => {
                       <!-- 单词内容 -->
                       <div class="space-y-1">
                         <!-- 原词显示逻辑 -->
-                        <div v-if="!isTrainingModel || item.showSource || isShowSource || (isTrainingModel && isOnlyShowErrors && item.spellError)">
+                        <div v-if="shouldShowWordSource(item)">
                           <div class="font-medium text-gray-900 dark:text-white">
                             <span v-for="w in item.word" :key="w">
                               <a
@@ -1200,8 +1499,10 @@ watch(category, () => {
                           :id="item.id"
                           :class="getInputStyleClass(item)"
                           type="text"
+                          :value="''"
                           placeholder="输入单词..."
                           autocomplete="off"
+                          @input="(e) => { item.spellValue = e.target.value; wordHasInputMap.set(item.id, true) }"
                           @focusout="onInputFoucsOut($event, item)"
                           @focusin="onInputFoucsIn($event, `vocabulary/audio/${category}/${item.word[0]}.mp3`)"
                           @keydown="onInputKeydown"
@@ -1234,6 +1535,9 @@ watch(category, () => {
                   <tr>
                     <th class="p-4 text-left text-xs font-medium tracking-wider text-gray-500 dark:text-white">
                       #
+                    </th>
+                    <th v-if="!isTrainingModel" class="p-4 text-left text-xs font-medium tracking-wider text-gray-500 dark:text-white">
+                      关注等级
                     </th>
                     <th class="p-4 text-xs font-medium tracking-wider text-gray-500 dark:text-white">
                       <br>
@@ -1276,7 +1580,7 @@ watch(category, () => {
                           </span>
                         </div>
                         <div v-if="refVocabulary[category]?.audio" class="justify-items-end">
-                          <audio controls class="chapter">
+                          <audio :key="`audio-${category}`" controls class="chapter">
                             <source :src="`vocabulary/audio/${refVocabulary[category].audio}`" type="audio/mpeg">
                           </audio>
                         </div>
@@ -1293,6 +1597,26 @@ watch(category, () => {
                       <td class="p-4">
                         {{ item.id }}
                       </td>
+                      <!-- 关注等级列：非训练模式才显示 -->
+                      <td v-if="!isTrainingModel" class="p-4">
+                        <select
+                          :value="item.focusLevel ?? 0"
+                          class="h-8 w-20 border rounded px-2 text-sm text-gray-700 dark:text-gray-200"
+                          :class="getFocusLevelBorderClass(item.focusLevel ?? 0)"
+                          @change="setWordFocusLevel(item, Number.parseInt($event.target.value))"
+                          @click.stop
+                        >
+                          <option :value="0">
+                            普通
+                          </option>
+                          <option :value="1">
+                            关注
+                          </option>
+                          <option :value="2">
+                            重点
+                          </option>
+                        </select>
+                      </td>
                       <td>
                         <i
                           v-if="refVocabulary[category]?.audio"
@@ -1300,15 +1624,16 @@ watch(category, () => {
                           @click="play(`vocabulary/audio/${category}/${item.word[0]}.mp3`)"
                         />
 
-
                         <template v-if="isTrainingModel">
                           <i
-                            :class="`${item.showSource ? 'i-ph-eye-slash-bold' : 'i-ph-eye-bold'} inline-block cursor-pointer ml-4`"
-                            title="显示原词" @click="item.showSource = !item.showSource"
+                            class="ml-4 inline-block cursor-pointer" :class="[wordShowSourceMap.get(item.id) ? 'i-ph-eye-slash-bold' : 'i-ph-eye-bold']"
+                            title="显示原词" @click.stop="toggleShowSource(item)"
                           />
                           <input
                             :id="item.id" autocomplete="off" :class="getInputStyleClass(item)"
                             type="text"
+                            :value="''"
+                            @input="(e) => { item.spellValue = e.target.value; wordHasInputMap.set(item.id, true) }"
                             @focusout="onInputFoucsOut($event, item)"
                             @focusin="onInputFoucsIn($event, `vocabulary/audio/${category}/${item.word[0]}.mp3`)"
                             @keydown="onInputKeydown"
@@ -1316,7 +1641,7 @@ watch(category, () => {
                         </template>
                       </td>
                       <td class="group relative whitespace-nowrap p-4">
-                        <div v-if="!isTrainingModel || item.showSource || isShowSource || (isTrainingModel && isOnlyShowErrors && item.spellError)">
+                        <div v-if="shouldShowWordSource(item)">
                           <p v-for="w in item.word" :key="w">
                             <a
                               class="hover:underline" :title="`在剑桥词典中查询 ${w}`" target="_blank"
@@ -1549,11 +1874,11 @@ watch(category, () => {
 
       <!-- 弹窗内容 -->
       <div class="p-6">
-        <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <div class="grid grid-cols-1 gap-3 lg:grid-cols-3 sm:grid-cols-2">
           <div
             v-for="chapterName in chapters"
             :key="chapterName"
-            class="flex items-center justify-between rounded-lg border border-gray-200 p-4 dark:border-gray-600"
+            class="flex items-center justify-between border border-gray-200 rounded-lg p-4 dark:border-gray-600"
           >
             <div class="flex-1">
               <div class="font-medium text-gray-900 dark:text-white">
@@ -1565,13 +1890,21 @@ watch(category, () => {
             </div>
             <select
               :value="chapterLearnStatus[chapterName] || ChapterStatus.NOT_LEARNED"
-              class="ml-4 block w-32 text-sm border border-gray-300 rounded-lg bg-gray-50 p-2 text-gray-900 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
+              class="ml-4 block w-32 border border-gray-300 rounded-lg bg-gray-50 p-2 text-sm text-gray-900 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
               @change="setChapterStatus(chapterName, $event.target.value)"
             >
-              <option :value="ChapterStatus.NOT_LEARNED">未学习</option>
-              <option :value="ChapterStatus.LEARNED">已学习</option>
-              <option :value="ChapterStatus.COMPLETED">已完成</option>
-              <option :value="ChapterStatus.MASTERED">已熟练</option>
+              <option :value="ChapterStatus.NOT_LEARNED">
+                未学习
+              </option>
+              <option :value="ChapterStatus.LEARNED">
+                已学习
+              </option>
+              <option :value="ChapterStatus.COMPLETED">
+                已完成
+              </option>
+              <option :value="ChapterStatus.MASTERED">
+                已熟练
+              </option>
             </select>
           </div>
         </div>
@@ -1586,25 +1919,33 @@ watch(category, () => {
               <div class="text-2xl font-bold text-gray-500 dark:text-gray-400">
                 {{ Object.keys(chapterLearnStatus).filter(k => chapterLearnStatus[k] === ChapterStatus.NOT_LEARNED).length }}
               </div>
-              <div class="text-sm text-gray-600 dark:text-gray-400">未学习</div>
+              <div class="text-sm text-gray-600 dark:text-gray-400">
+                未学习
+              </div>
             </div>
             <div class="text-center">
               <div class="text-2xl font-bold text-blue-500 dark:text-blue-400">
                 {{ Object.keys(chapterLearnStatus).filter(k => chapterLearnStatus[k] === ChapterStatus.LEARNED).length }}
               </div>
-              <div class="text-sm text-blue-600 dark:text-blue-400">已学习</div>
+              <div class="text-sm text-blue-600 dark:text-blue-400">
+                已学习
+              </div>
             </div>
             <div class="text-center">
               <div class="text-2xl font-bold text-orange-500 dark:text-orange-400">
                 {{ Object.keys(chapterLearnStatus).filter(k => chapterLearnStatus[k] === ChapterStatus.COMPLETED).length }}
               </div>
-              <div class="text-sm text-orange-600 dark:text-orange-400">已完成</div>
+              <div class="text-sm text-orange-600 dark:text-orange-400">
+                已完成
+              </div>
             </div>
             <div class="text-center">
               <div class="text-2xl font-bold text-green-500 dark:text-green-400">
                 {{ Object.keys(chapterLearnStatus).filter(k => chapterLearnStatus[k] === ChapterStatus.MASTERED).length }}
               </div>
-              <div class="text-sm text-green-600 dark:text-green-400">已熟练</div>
+              <div class="text-sm text-green-600 dark:text-green-400">
+                已熟练
+              </div>
             </div>
           </div>
         </div>
