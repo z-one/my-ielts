@@ -1,6 +1,6 @@
 <!-- eslint-disable eslint-comments/no-unlimited-disable -->
 <script setup generic="T extends any, O extends any">
-import { loadWordProgress as loadWordProgressFromBackend, syncUserSettings, syncWordProgress, updateChapterStatus } from '../../services/sync'
+import { loadChapterStatus as loadChapterStatusFromBackend, loadWordProgress as loadWordProgressFromBackend, loadUserSettings as loadUserSettingsFromBackend, syncUserSettings, syncWordProgress, updateChapterStatus } from '../../services/sync'
 import vocabulary from './vocabulary'
 import { useAuthStore } from '~/stores/auth'
 
@@ -539,14 +539,36 @@ onMounted(async () => {
       console.error('从后端加载进度失败:', error)
       loadProgress()
     }
+
+    // 从后端加载章节学习状态
+    try {
+      const backendChapterStatus = await loadChapterStatusFromBackend()
+      if (backendChapterStatus)
+        chapterLearnStatus.value = backendChapterStatus
+      else
+        loadChapterStatus()
+    }
+    catch (error) {
+      console.error('从后端加载章节状态失败:', error)
+      loadChapterStatus()
+    }
+
+    // 从后端加载用户设置
+    try {
+      const backendSettings = await loadUserSettingsFromBackend()
+      if (backendSettings && backendSettings.words_per_page) {
+        wordsPerPage.value = backendSettings.words_per_page
+      }
+    }
+    catch (error) {
+      console.error('从后端加载用户设置失败:', error)
+    }
   }
   else {
     // 未登录：使用本地数据
     loadProgress()
+    loadChapterStatus()
   }
-
-  // 加载章节学习状态
-  loadChapterStatus()
 
   // 只能同时播放一个音频
   const audioTags = document.getElementsByTagName('audio')
