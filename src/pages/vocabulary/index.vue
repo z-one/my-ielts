@@ -212,19 +212,48 @@ watch(category, async (newVal, oldVal) => {
 
 // 保存练习进度
 async function saveProgress() {
+  // 已登录用户：直接同步到后端，不保存到 localStorage
+  if (authStore.isAuthenticated) {
+    const progress = {
+      chapter: category.value,
+      words: {},
+    }
+
+    const words = refVocabulary[category.value].words
+    for (const group of words) {
+      for (const item of group) {
+        const showSource = wordShowSourceMap.get(item.id) || false
+        item.showSource = showSource
+        progress.words[item.id] = {
+          spellValue: item.spellValue || '',
+          spellError: item.spellError || false,
+          correctCount: item.correctCount || 0,
+          errorCount: item.errorCount || 0,
+          showSource: showSource || false,
+          focusLevel: item.focusLevel ?? 0,
+        }
+      }
+    }
+
+    try {
+      await syncWordProgress(category.value, progress)
+    }
+    catch (error) {
+      console.error('同步单词进度失败:', error)
+    }
+    return
+  }
+
+  // 未登录用户：保存到 localStorage
   const progress = {
     chapter: category.value,
     words: {},
   }
 
-  // 只保存练习状态
   const words = refVocabulary[category.value].words
   for (const group of words) {
     for (const item of group) {
-      // 保存所有有自定义属性的数据（包括 focusLevel）
-      // 从 Map 中获取 showSource 状态
       const showSource = wordShowSourceMap.get(item.id) || false
-      // 同步到 item 对象
       item.showSource = showSource
       if (item.spellValue !== undefined || item.spellError !== undefined || item.correctCount !== undefined || item.errorCount !== undefined || item.focusLevel !== undefined || showSource !== undefined) {
         progress.words[item.id] = {
@@ -239,26 +268,14 @@ async function saveProgress() {
     }
   }
 
-  localStorage.setItem(PROGRESS_KEY, JSON.stringify(progress))
-
-  // 同步到后端
-  if (authStore.isAuthenticated) {
-    try {
-      await syncWordProgress(category.value)
-    }
-    catch (error) {
-      console.error('同步单词进度失败:', error)
-    }
-  }
+  const chapterProgressKey = `${PROGRESS_KEY}_${category.value}`
+  localStorage.setItem(chapterProgressKey, JSON.stringify(progress))
 }
 
 // 应用进度数据到单词（用于后端加载的数据）
 function applyProgress(progress) {
   if (progress.chapter !== category.value)
     return
-
-  // console.log('应用进度数据:', progress)
-  // console.log('当前章节:', category.value)
 
   const words = refVocabulary[category.value].words
   let appliedCount = 0
@@ -267,17 +284,13 @@ function applyProgress(progress) {
     for (const item of group) {
       const saved = progress.words[item.id]
       if (saved) {
-        // console.log(`单词 ${item.id} 应用数据:`, saved)
-        // 注意：spellValue 保持原值，不使用单词原词（练习模式下不应该显示原词）
         item.spellValue = saved.spellValue || ''
         item.spellError = saved.spellError
         item.correctCount = saved.correctCount || 0
         item.errorCount = saved.errorCount || 0
         item.showSource = saved.showSource || false
         item.focusLevel = saved.focusLevel ?? 0
-        // 将 showSource 同步到 Map
         wordShowSourceMap.set(item.id, saved.showSource || false)
-        // console.log(`单词 ${item.id} 应用后 spellValue:`, item.spellValue)
         appliedCount++
       }
     }
@@ -288,7 +301,8 @@ function applyProgress(progress) {
 
 // 加载练习进度
 function loadProgress() {
-  const savedProgress = localStorage.getItem(PROGRESS_KEY)
+  const chapterProgressKey = `${PROGRESS_KEY}_${category.value}`
+  const savedProgress = localStorage.getItem(chapterProgressKey)
   if (!savedProgress)
     return
 
@@ -416,6 +430,12 @@ let saveProgressTimer = null
 
 // 设置单词关注等级
 function setWordFocusLevel(item, level) {
+  // 未登录用户提示登录
+  if (!authStore.isAuthenticated) {
+    alert('请先登录以保存学习进度')
+    return
+  }
+
   item.focusLevel = level
   // 使用防抖延迟保存，避免频繁操作导致音频中断
   if (saveProgressTimer)
@@ -431,7 +451,7 @@ function setWordFocusLevel(item, level) {
 function toggleShowSource(item) {
   const currentValue = wordShowSourceMap.get(item.id) || false
   wordShowSourceMap.set(item.id, !currentValue)
-  // 保存进度
+  // 保存进度（未登录用户也允许保存到本地）
   saveProgress()
 }
 
@@ -445,7 +465,7 @@ function shouldShowWordSource(item) {
 }
 
 // 保存所有章节的进度（包含 focusLevel）
-function saveAllChaptersProgress() {
+async function saveAllChaptersProgress() {
   const progress = {
     chapter: category.value,
     words: {},
@@ -467,7 +487,20 @@ function saveAllChaptersProgress() {
     }
   }
 
-  localStorage.setItem(PROGRESS_KEY, JSON.stringify(progress))
+  // 已登录用户：同步到后端
+  if (authStore.isAuthenticated) {
+    try {
+      await syncWordProgress(category.value, progress)
+    }
+    catch (error) {
+      console.error('同步所有章节进度失败:', error)
+    }
+  }
+  else {
+    // 未登录用户：保存到 localStorage
+    const chapterProgressKey = `${PROGRESS_KEY}_${category.value}`
+    localStorage.setItem(chapterProgressKey, JSON.stringify(progress))
+  }
 }
 
 function calcStats() {
@@ -832,7 +865,7 @@ function shouldShowWord(item) {
   return true
 }
 
-function removeSingleWord(item) {
+async function removeSingleWord(item) {
   if (!confirm(`确定要剔除单词"${item.word[0]}"吗？此操作不可恢复。`))
     return
 
@@ -857,7 +890,7 @@ function removeSingleWord(item) {
     saveCustomWords()
 
   // 保存练习进度
-  saveProgress()
+  await saveProgress()
 
   // 重新计算统计
   trainingStats.value = calcStats()
@@ -874,7 +907,7 @@ function removeSingleWord(item) {
   alert(`已成功剔除单词"${item.word[0]}"`)
 }
 
-function removeErrorWords() {
+async function removeErrorWords() {
   const confirmMessage = `确定要剔除当前章节的所有错词吗？
 这些单词将被永久移除，此操作不可恢复。`
   if (!confirm(confirmMessage))
@@ -913,7 +946,7 @@ function removeErrorWords() {
     saveCustomWords()
 
   // 保存练习进度
-  saveProgress()
+  await saveProgress()
 
   // 重新计算统计
   trainingStats.value = calcStats()
@@ -925,6 +958,18 @@ function removeErrorWords() {
 }
 
 function clearProgress() {
+  // 已登录用户提示确认
+  if (authStore.isAuthenticated) {
+    if (!confirm('确定要清除当前章节的进度吗？此操作将同步到后端，不可恢复。')) {
+      return
+    }
+  }
+  else {
+    if (!confirm('确定要清除当前章节的进度吗？此操作不可恢复。')) {
+      return
+    }
+  }
+
   // 清除当前章节的练习状态
   const words = refVocabulary[category.value].words
   for (const group of words) {
@@ -936,8 +981,18 @@ function clearProgress() {
     }
   }
 
-  // 清除本地存储
-  localStorage.removeItem(PROGRESS_KEY)
+  // 已登录用户：同步清零后的数据到后端
+  if (authStore.isAuthenticated) {
+    saveProgress().catch(error => {
+      console.error('同步清零进度失败:', error)
+    })
+  }
+  else {
+    // 未登录用户：清除本地存储
+    const chapterProgressKey = `${PROGRESS_KEY}_${category.value}`
+    localStorage.removeItem(chapterProgressKey)
+  }
+
   trainingStats.value = calcStats()
 }
 
@@ -1026,12 +1081,35 @@ watch(wordsPerPage, async (newValue) => {
 
 // 初始化单词属性
 function initWordProperties() {
+  // 初始化所有章节的单词属性
   for (const chapterKey in refVocabulary) {
     const chapter = refVocabulary[chapterKey]
     if (chapter.words) {
       for (const group of chapter.words) {
         for (const item of group) {
-          // 初始化所有进度相关的属性，确保响应性
+          // 先尝试从本地存储加载该章节的进度数据
+          const chapterProgressKey = `${PROGRESS_KEY}_${chapterKey}`
+          try {
+            const progressData = localStorage.getItem(chapterProgressKey)
+            if (progressData) {
+              const savedProgress = JSON.parse(progressData)
+              if (savedProgress.words[item.id]) {
+                const saved = savedProgress.words[item.id]
+                item.showSource = saved.showSource !== undefined ? saved.showSource : false
+                item.spellValue = saved.spellValue || ''
+                item.spellError = saved.spellError || false
+                item.correctCount = saved.correctCount || 0
+                item.errorCount = saved.errorCount || 0
+                item.focusLevel = saved.focusLevel ?? 0
+                continue // 已恢复数据，跳过默认值初始化
+              }
+            }
+          }
+          catch (error) {
+            console.error(`加载章节 ${chapterKey} 进度失败:`, error)
+          }
+
+          // 如果没有本地数据，才使用默认值
           if ('showSource' in item === false)
             item.showSource = false
           if ('spellValue' in item === false)

@@ -11,6 +11,16 @@ const menus = reactive([
     link: '/vocabulary',
   },
   {
+    label: '重点词汇',
+    icon: 'i-carbon-star-filled',
+    link: '/vocabulary/important',
+  },
+  {
+    label: '考试',
+    icon: 'i-carbon-test-tool',
+    link: '/exam',
+  },
+  {
     label: '语法',
     icon: 'i-carbon-load-balancer-vpc ',
     link: '/grammar',

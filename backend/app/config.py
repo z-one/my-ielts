@@ -6,7 +6,7 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "sqlite:///./ielts.db"
     SECRET_KEY: str = "your-secret-key-change-this"
     ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 120
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 360
     CORS_ORIGINS: str = "http://localhost:3333,http://localhost:5173"
     ENVIRONMENT: str = "development"
 
