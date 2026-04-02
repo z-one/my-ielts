@@ -22,7 +22,7 @@ router.beforeEach((to, from, next) => {
   const token = localStorage.getItem('access_token')
 
   // 如果不需要登录的页面，直接放行
-  const publicPages = ['/login', '/register', '/']
+  const publicPages = ['/login', '/register', '/', '/vocabulary/search']
   const isPublicPage = publicPages.some(page => to.path.startsWith(page))
 
   if (isPublicPage || to.path.startsWith('/#')) {

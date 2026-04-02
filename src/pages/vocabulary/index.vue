@@ -716,8 +716,46 @@ function play(audioPath) {
 }
 
 function copyText(item) {
+  console.log('copyText 被调用:', item)
   const text = `${item.word} ${item.pos} ${item.meaning}`
-  navigator.clipboard.writeText(text)
+  console.log('准备复制的内容:', text)
+
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    console.log('使用 Clipboard API')
+    navigator.clipboard.writeText(text)
+      .then(() => {
+        console.log('复制成功 (Clipboard API)')
+        // alert('复制成功!')
+      })
+      .catch((error) => {
+        console.error('复制失败 (Clipboard API):', error)
+        // alert('复制失败,请重试')
+      })
+  }
+  else {
+    console.log('使用降级方案 (document.execCommand)')
+    // 降级方案:使用传统的 textarea 方法
+    const textarea = document.createElement('textarea')
+    textarea.value = text
+    textarea.style.position = 'fixed'
+    textarea.style.opacity = '0'
+    document.body.appendChild(textarea)
+    textarea.select()
+    try {
+      const success = document.execCommand('copy')
+      console.log('execCommand copy 返回值:', success)
+      if (success) {
+        // alert('复制成功!')
+      } else {
+        // alert('复制失败,请重试')
+      }
+    }
+    catch (error) {
+      console.error('复制失败 (降级方案):', error)
+      // alert('复制失败,请重试')
+    }
+    document.body.removeChild(textarea)
+  }
 }
 
 function onInputKeydown(e) {
@@ -839,7 +877,26 @@ function copyAllError() {
         errorWords.push(`${item.word} ${item.pos} ${item.meaning}`)
     }
   }
-  navigator.clipboard.writeText(errorWords.join('\n\n'))
+  const text = errorWords.join('\n\n')
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text)
+  }
+  else {
+    // 降级方案：使用传统的 textarea 方法
+    const textarea = document.createElement('textarea')
+    textarea.value = text
+    textarea.style.position = 'fixed'
+    textarea.style.opacity = '0'
+    document.body.appendChild(textarea)
+    textarea.select()
+    try {
+      document.execCommand('copy')
+    }
+    catch (error) {
+      console.error('复制失败:', error)
+    }
+    document.body.removeChild(textarea)
+  }
 }
 
 function shouldShowWord(item) {

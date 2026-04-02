@@ -310,10 +310,44 @@ function playWordAudio(item) {
 
 // 复制文本
 function copyText(item) {
+  console.log('copyText 被调用 (important.vue):', item)
   const text = `${item.en}\n${item.pos}\n${item.meaning}\n${item.example}\n${item.extra || ''}`
-  navigator.clipboard.writeText(text).then(() => {
-    alert('已复制到剪贴板')
-  })
+  console.log('准备复制的内容:', text)
+
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    console.log('使用 Clipboard API')
+    navigator.clipboard.writeText(text)
+      .then(() => {
+        console.log('复制成功 (Clipboard API)')
+        alert('已复制到剪贴板')
+      })
+      .catch((error) => {
+        console.error('复制失败 (Clipboard API):', error)
+        alert('复制失败,请重试')
+      })
+  } else {
+    console.log('Clipboard API 不可用,使用降级方案')
+    const textarea = document.createElement('textarea')
+    textarea.value = text
+    textarea.style.position = 'fixed'
+    textarea.style.opacity = '0'
+    document.body.appendChild(textarea)
+    textarea.select()
+    try {
+      const success = document.execCommand('copy')
+      console.log('execCommand copy 返回值:', success)
+      if (success) {
+        alert('已复制到剪贴板')
+      } else {
+        alert('复制失败,请重试')
+      }
+    }
+    catch (error) {
+      console.error('复制失败 (降级方案):', error)
+      alert('复制失败,请重试')
+    }
+    document.body.removeChild(textarea)
+  }
 }
 
 // 剔除单个单词（从错词列表中移除，但不清除拼写错误标记）

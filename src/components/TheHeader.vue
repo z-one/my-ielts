@@ -11,6 +11,11 @@ const menus = reactive([
     link: '/vocabulary',
   },
   {
+    label: '单词查询',
+    icon: 'i-carbon-search',
+    link: '/vocabulary/search',
+  },
+  {
     label: '重点词汇',
     icon: 'i-carbon-star-filled',
     link: '/vocabulary/important',
