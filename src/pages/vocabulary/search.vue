@@ -48,11 +48,32 @@ function searchWords() {
 
 // 播放单词音频
 function playAudio(word) {
-  const audioPath = `/179_audios/${word.toLowerCase()}.mp3`
-  const audio = new Audio(audioPath)
-  audio.play().catch(error => {
-    console.log('音频播放失败:', error)
-  })
+  // 尝试不同的音频路径
+  const audioPaths = [
+    `vocabulary/audio/${word.chapter}/${word.word[0]}.mp3`,
+    `179_audios/${word.word[0].toLowerCase()}.mp3`
+  ]
+
+  let currentIndex = 0
+  const audio = new Audio()
+
+  function tryNextPath() {
+    if (currentIndex >= audioPaths.length) {
+      console.log('所有音频路径都尝试失败')
+      return
+    }
+
+    const audioPath = audioPaths[currentIndex]
+    audio.src = audioPath
+
+    audio.play().catch(error => {
+      console.log(`音频播放失败 (${audioPath}):`, error)
+      currentIndex++
+      tryNextPath()
+    })
+  }
+
+  tryNextPath()
 }
 
 // 复制单词信息
@@ -150,7 +171,7 @@ onMounted(() => {
             </div>
             <div class="mt-3 sm:mt-0 flex gap-2">
               <button
-                @click="playAudio(word.word[0])"
+                @click="playAudio(word)"
                 class="px-3 py-1 bg-gray-100 text-gray-800 rounded-md hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
               >
                 发音
