@@ -10,10 +10,23 @@ import UnoCSS from 'unocss/vite'
 import VueMacros from 'unplugin-vue-macros/vite'
 
 export default defineConfig({
-  base: '',
+  base: './',
   server: {
     host: '0.0.0.0',
     port: 3333,
+  },
+  build: {
+    outDir: 'dist',
+    emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          'vue-vendor': ['vue', 'vue-router', 'pinia'],
+          'vueuse': ['@vueuse/core'],
+        },
+      },
+    },
+    chunkSizeWarningLimit: 1000,
   },
   resolve: {
     alias: {
