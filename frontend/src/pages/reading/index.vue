@@ -4,22 +4,40 @@ import words from './reading538words'
 const ws = reactive(words)
 
 const keyword = ref('')
+const activeCategoryIndex = ref(0)
+const activeCategory = computed(() => ws[activeCategoryIndex.value])
 </script>
 
 <template>
   <div class="px-4 pt-6 2xl:px-0">
     <div class="border border-gray-200 rounded-lg bg-white p-4 shadow-sm dark:border-gray-700 dark:bg-gray-800 sm:p-6">
+      <div class="border-b border-gray-200 dark:border-gray-700">
+        <nav class="-mb-px flex gap-2 overflow-x-auto" aria-label="Reading categories">
+          <button
+            v-for="(cat, index) in ws"
+            :key="cat.title"
+            type="button"
+            class="shrink-0 border-b-2 px-4 py-3 text-sm font-medium transition-colors"
+            :class="index === activeCategoryIndex
+              ? 'border-blue-600 text-blue-600 dark:border-blue-400 dark:text-blue-400'
+              : 'border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700 dark:text-gray-400 dark:hover:border-gray-600 dark:hover:text-gray-200'"
+            @click="activeCategoryIndex = index"
+          >
+            {{ cat.title }}
+            <span class="ml-2 rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-600 dark:bg-gray-700 dark:text-gray-300">
+              {{ cat.words.length }}
+            </span>
+          </button>
+        </nav>
+      </div>
       <!-- Card header -->
-      <template
-        v-for="cat in ws"
-        :key="cat.title"
-      >
+      <template v-if="activeCategory">
         <div class="mt-6 items-center justify-between lg:flex">
           <div class="mb-4 lg:mb-0">
             <h3 class="mb-2 text-xl font-bold text-gray-900 dark:text-white">
-              {{ cat.title }}
+              {{ activeCategory.title }}
             </h3>
-            <span class="text-base font-normal text-gray-500 dark:text-gray-400">{{ cat.define }}</span>
+            <span class="text-base font-normal text-gray-500 dark:text-gray-400">{{ activeCategory.define }}</span>
           </div>
           <div class="items-center sm:flex">
             <div class="flex items-center">
@@ -70,8 +88,8 @@ const keyword = ref('')
             </thead>
             <tbody>
               <tr
-                v-for="w in cat.words"
-                :key="w.index"
+                v-for="w in activeCategory.words"
+                :key="w[0]"
                 class="border-b bg-white dark:border-gray-700 dark:bg-gray-800"
               >
                 <td class="px-6 py-4">

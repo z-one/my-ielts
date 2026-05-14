@@ -5,6 +5,7 @@ import vocabulary from './vocabulary'
 import { useAuthStore } from '~/stores/auth'
 
 const authStore = useAuthStore()
+const route = useRoute()
 
 const CHAPTER_KEY = 'vocabulary_chapter'
 const PROGRESS_KEY = 'vocabulary_progress'
@@ -557,6 +558,8 @@ onMounted(async () => {
 
   // 初始化自添加生词
   initCustomWords()
+  if (route.query.addWord === '1')
+    isShowAddWordDialog.value = true
 
   // 加载练习进度
   if (authStore.isAuthenticated) {
@@ -1244,12 +1247,28 @@ function saveCustomWords() {
 }
 
 // 新添加单词的临时数据
+const posOptions = [
+  { label: '名词 n.', value: 'n.' },
+  { label: '动词 v.', value: 'v.' },
+  { label: '形容词 adj.', value: 'adj.' },
+  { label: '副词 adv.', value: 'adv.' },
+  { label: '介词 prep.', value: 'prep.' },
+  { label: '连词 conj.', value: 'conj.' },
+  { label: '代词 pron.', value: 'pron.' },
+  { label: '限定词 det.', value: 'det.' },
+  { label: '数词 num.', value: 'num.' },
+  { label: '感叹词 interj.', value: 'interj.' },
+  { label: '助动词 aux.', value: 'aux.' },
+  { label: '情态动词 modal v.', value: 'modal v.' },
+  { label: '短语 phr.', value: 'phr.' },
+]
 const newWord = ref({
   word: '',
-  pos: 'n.',
+  pos: ['n.'],
   meaning: '',
   example: '',
 })
+const selectedNewWordPos = computed(() => newWord.value.pos.length ? newWord.value.pos.join('/') : '请选择词性')
 
 // 添加新单词
 function addNewWord() {
@@ -1269,10 +1288,11 @@ function addNewWord() {
 
   // 创建新组或添加到现有组
   const groupName = `自定义组 ${(customWords.words?.length || 0) + 1}`
+  const pos = newWord.value.pos.length ? newWord.value.pos.join('/') : 'n.'
   const newGroup = words.map((word, index) => ({
     id: `custom_${Date.now()}_${index}`,
     word: [word],
-    pos: newWord.value.pos || 'n.',
+    pos,
     meaning: newWord.value.meaning,
     example: newWord.value.example || '',
     extra: '',
@@ -1287,7 +1307,7 @@ function addNewWord() {
   // 重置表单
   newWord.value = {
     word: '',
-    pos: 'n.',
+    pos: ['n.'],
     meaning: '',
     example: '',
   }
@@ -1369,6 +1389,14 @@ watch(isTrainingModel, (newValue) => {
     wordHasInputMap.clear()
   }
 })
+
+watch(
+  () => route.query.addWord,
+  (addWord) => {
+    if (addWord === '1')
+      isShowAddWordDialog.value = true
+  },
+)
 </script>
 
 <template>
@@ -1443,13 +1471,6 @@ watch(isTrainingModel, (newValue) => {
               @click="showChapterStatusDialog = true"
             >
               📚 标记章节
-            </button>
-            <button
-              type="button"
-              class="bg-indigo-600 text-white mobile-button dark:bg-indigo-500 hover:bg-indigo-700 focus:ring-indigo-300 dark:hover:bg-indigo-600 dark:focus:ring-indigo-800"
-              @click="isShowAddWordDialog = true"
-            >
-              📝 添加生词
             </button>
             <label class="ml-2 inline-flex cursor-pointer items-center">
               <input v-model="isTrainingModel" type="checkbox" class="peer sr-only">
@@ -2142,11 +2163,27 @@ watch(isTrainingModel, (newValue) => {
               placeholder="单词（多个单词用逗号分隔）"
               class="mobile-input"
             >
-            <input
-              v-model="newWord.pos"
-              placeholder="词性（如：n. v. adj.）"
-              class="mobile-input"
-            >
+            <details class="relative">
+              <summary class="mobile-input flex cursor-pointer list-none items-center justify-between">
+                <span>{{ selectedNewWordPos }}</span>
+                <span class="i-carbon-chevron-down ml-2 shrink-0" />
+              </summary>
+              <div class="absolute z-20 mt-2 max-h-64 w-full overflow-auto border border-gray-200 rounded-lg bg-white p-2 shadow-lg dark:border-gray-600 dark:bg-gray-800">
+                <label
+                  v-for="option in posOptions"
+                  :key="option.value"
+                  class="flex cursor-pointer items-center rounded px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-700"
+                >
+                  <input
+                    v-model="newWord.pos"
+                    type="checkbox"
+                    :value="option.value"
+                    class="mr-2 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                  >
+                  {{ option.label }}
+                </label>
+              </div>
+            </details>
             <input
               v-model="newWord.meaning"
               placeholder="中文释义"

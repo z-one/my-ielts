@@ -1,6 +1,7 @@
 from app.schemas.user import UserCreate, UserLogin, UserResponse, Token, TokenData
 from app.schemas.chapter import ChapterProgressCreate, ChapterProgressUpdate, ChapterProgressResponse
 from app.schemas.word import WordProgressCreate, WordProgressUpdate, WordProgressResponse, WordProgressSync
+from app.schemas.vocabulary import VocabularyWordCreate, VocabularyWordBatchCreate, CustomVocabularyWordCreate, VocabularyWordUpdate, VocabularyWordResponse
 from app.schemas.settings import UserSettingsUpdate, UserSettingsResponse
 
 __all__ = [
@@ -16,6 +17,11 @@ __all__ = [
     "WordProgressUpdate",
     "WordProgressResponse",
     "WordProgressSync",
+    "VocabularyWordCreate",
+    "VocabularyWordBatchCreate",
+    "CustomVocabularyWordCreate",
+    "VocabularyWordUpdate",
+    "VocabularyWordResponse",
     "UserSettingsUpdate",
     "UserSettingsResponse",
 ]

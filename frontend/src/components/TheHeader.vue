@@ -50,6 +50,11 @@ const menus = reactive([
     icon: 'i-carbon-edit',
     link: '/writing',
   },
+  {
+    label: '添加生词',
+    icon: 'i-carbon-add-alt',
+    link: '/vocabulary?addWord=1',
+  },
 ])
 const showMobileMenu = ref(false)
 </script>
