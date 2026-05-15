@@ -1,18 +1,29 @@
-# 使用 nginx:alpine 作为基础镜像
-FROM nginx:alpine
+FROM node:20-alpine AS builder
 
-# 安装 curl 用于健康检查
+WORKDIR /app/frontend
+
+RUN corepack enable
+
+COPY frontend/package.json frontend/pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
+
+COPY frontend/ ./
+
+ARG VITE_API_BASE_URL=
+ENV VITE_API_BASE_URL=${VITE_API_BASE_URL}
+
+RUN pnpm run build:prod
+
+FROM nginx:1.27-alpine
+
 RUN apk add --no-cache curl
 
-# 创建日志目录
-RUN mkdir -p /var/log/nginx
+COPY docker/frontend/nginx.conf /etc/nginx/conf.d/default.conf
+COPY --from=builder /app/frontend/dist /usr/share/nginx/html
 
-# 暴露端口
 EXPOSE 80
 
-# 健康检查
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-  CMD curl -f http://localhost/ || exit 1
+  CMD curl -fsS http://localhost/ || exit 1
 
-# 启动 nginx
 CMD ["nginx", "-g", "daemon off;"]
