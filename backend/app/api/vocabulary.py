@@ -1,14 +1,16 @@
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import or_
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.core.deps import get_current_user, get_optional_current_user
 from app.database import get_db
-from app.models.vocabulary import VocabularyWord
+from app.models.vocabulary import VocabularyChapter, VocabularyWord
 from app.schemas.vocabulary import (
     CustomVocabularyWordCreate,
+    CustomVocabularyWordResponse,
+    VocabularyChapterResponse,
     VocabularyWordBatchCreate,
     VocabularyWordCreate,
     VocabularyWordResponse,
@@ -21,16 +23,19 @@ router = APIRouter(prefix="/api/vocabulary", tags=["词库"])
 
 
 def serialize_word(word: VocabularyWord) -> VocabularyWordResponse:
+    word_variants = decode_word_list(word.word_variants) if word.word_variants else decode_word_list(word.word)
     return VocabularyWordResponse(
         id=word.id,
         user_id=word.user_id,
         chapter_name=word.chapter_name,
         group_name=word.group_name,
-        word=decode_word_list(word.word),
+        word=word_variants,
+        word_variants=word_variants,
         pos=word.pos or "",
         meaning=word.meaning or "",
         example=word.example or "",
         extra=word.extra or "",
+        metadata=word.metadata_json or "",
         source=word.source,
         created_at=word.created_at,
         updated_at=word.updated_at,
@@ -38,15 +43,45 @@ def serialize_word(word: VocabularyWord) -> VocabularyWordResponse:
 
 
 def visible_words_query(db: Session, current_user):
-    query = db.query(VocabularyWord).filter(VocabularyWord.source == "system")
+    public_sources = ["system", "youdao"]
+    query = db.query(VocabularyWord).filter(VocabularyWord.source.in_(public_sources))
     if current_user:
         query = db.query(VocabularyWord).filter(
             or_(
-                VocabularyWord.source == "system",
+                VocabularyWord.source.in_(public_sources),
                 VocabularyWord.user_id == current_user.id,
             )
         )
     return query
+
+
+def normalize_lookup_word(word: str) -> str:
+    return " ".join(word.strip().lower().split())
+
+
+def find_existing_visible_word(db: Session, current_user, raw_word: str) -> Optional[VocabularyWord]:
+    target = normalize_lookup_word(raw_word)
+    if not target:
+        return None
+
+    candidates = visible_words_query(db, current_user).filter(
+        or_(
+            func.lower(VocabularyWord.word) == target,
+            VocabularyWord.word_variants.ilike(f"%{target}%"),
+        )
+    ).order_by(
+        VocabularyWord.source.asc(),
+        VocabularyWord.id.asc(),
+    ).all()
+
+    for candidate in candidates:
+        values = [candidate.word]
+        if candidate.word_variants:
+            values.extend(decode_word_list(candidate.word_variants))
+        if any(normalize_lookup_word(value) == target for value in values):
+            return candidate
+
+    return None
 
 
 @router.get("/chapters", response_model=List[str])
@@ -55,14 +90,43 @@ def get_chapters(
     db: Session = Depends(get_db),
 ):
     """获取系统词和当前用户自定义词的章节列表。"""
-    rows = visible_words_query(db, current_user).with_entities(VocabularyWord.chapter_name).distinct().all()
-    return [row[0] for row in rows]
+    rows = db.query(VocabularyChapter.chapter_name).filter(
+        VocabularyChapter.source.in_(["system", "youdao"])
+    ).order_by(VocabularyChapter.sort_order.asc(), VocabularyChapter.chapter_name.asc()).all()
+    if not rows:
+        rows = visible_words_query(db, current_user).with_entities(VocabularyWord.chapter_name).distinct().all()
+
+    chapter_names = [row[0] for row in rows]
+    if current_user:
+        custom_rows = db.query(VocabularyWord.chapter_name).filter(
+            VocabularyWord.user_id == current_user.id,
+            VocabularyWord.source == "custom",
+        ).distinct().order_by(VocabularyWord.chapter_name.asc()).all()
+        for row in custom_rows:
+            if row[0] not in chapter_names:
+                chapter_names.append(row[0])
+
+    return chapter_names
+
+
+@router.get("/chapter-details", response_model=List[VocabularyChapterResponse])
+def get_chapter_details(
+    source: Optional[str] = Query(default=None, pattern="^(system|custom|youdao)$"),
+    db: Session = Depends(get_db),
+):
+    """获取词库章节目录详情。"""
+    query = db.query(VocabularyChapter)
+    if source:
+        query = query.filter(VocabularyChapter.source == source)
+    else:
+        query = query.filter(VocabularyChapter.source.in_(["system", "youdao"]))
+    return query.order_by(VocabularyChapter.sort_order.asc(), VocabularyChapter.chapter_name.asc()).all()
 
 
 @router.get("/words", response_model=List[VocabularyWordResponse])
 def get_words(
     chapter_name: Optional[str] = None,
-    source: Optional[str] = Query(default=None, pattern="^(system|custom)$"),
+    source: Optional[str] = Query(default=None, pattern="^(system|custom|youdao)$"),
     current_user=Depends(get_optional_current_user),
     db: Session = Depends(get_db),
 ):
@@ -106,11 +170,13 @@ def create_system_word(
         user_id=None,
         chapter_name=word_data.chapter_name,
         group_name=word_data.group_name,
-        word=encode_word_list(word_data.word),
+        word=word_data.word[0],
+        word_variants=encode_word_list(word_data.word_variants or word_data.word),
         pos=word_data.pos,
         meaning=word_data.meaning,
         example=word_data.example,
         extra=word_data.extra,
+        metadata_json=word_data.metadata,
         source="system",
     )
     db.add(word)
@@ -131,11 +197,13 @@ def batch_create_system_words(
             user_id=None,
             chapter_name=word_data.chapter_name,
             group_name=word_data.group_name,
-            word=encode_word_list(word_data.word),
+            word=word_data.word[0],
+            word_variants=encode_word_list(word_data.word_variants or word_data.word),
             pos=word_data.pos,
             meaning=word_data.meaning,
             example=word_data.example,
             extra=word_data.extra,
+            metadata_json=word_data.metadata,
             source="system",
         )
         for word_data in batch_data.words
@@ -146,28 +214,42 @@ def batch_create_system_words(
     return {"created": len(created_words)}
 
 
-@router.post("/custom-words", response_model=VocabularyWordResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/custom-words", response_model=CustomVocabularyWordResponse, status_code=status.HTTP_201_CREATED)
 def create_custom_word(
     word_data: CustomVocabularyWordCreate,
+    response: Response,
     current_user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    existing_word = find_existing_visible_word(db, current_user, word_data.word[0])
+    if existing_word:
+        response.status_code = status.HTTP_200_OK
+        return CustomVocabularyWordResponse(
+            word=serialize_word(existing_word),
+            already_exists=True,
+        )
+
     """创建当前用户的自添加生词。"""
     word = VocabularyWord(
         user_id=current_user.id,
         chapter_name=word_data.chapter_name,
         group_name=word_data.group_name,
-        word=encode_word_list(word_data.word),
+        word=word_data.word[0],
+        word_variants=encode_word_list(word_data.word_variants or word_data.word),
         pos=word_data.pos,
         meaning=word_data.meaning,
         example=word_data.example,
         extra=word_data.extra,
+        metadata_json=word_data.metadata,
         source="custom",
     )
     db.add(word)
     db.commit()
     db.refresh(word)
-    return serialize_word(word)
+    return CustomVocabularyWordResponse(
+        word=serialize_word(word),
+        already_exists=False,
+    )
 
 
 @router.put("/custom-words/{word_id}", response_model=VocabularyWordResponse)
@@ -188,7 +270,12 @@ def update_custom_word(
 
     update_data = word_update.model_dump(exclude_unset=True)
     if "word" in update_data:
-        update_data["word"] = encode_word_list(update_data["word"])
+        update_data["word_variants"] = encode_word_list(update_data.get("word_variants") or update_data["word"])
+        update_data["word"] = update_data["word"][0]
+    if "word_variants" in update_data and update_data["word_variants"] is not None:
+        update_data["word_variants"] = encode_word_list(update_data["word_variants"])
+    if "metadata" in update_data:
+        update_data["metadata_json"] = update_data.pop("metadata")
     for key, value in update_data.items():
         setattr(word, key, value)
 

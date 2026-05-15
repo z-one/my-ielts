@@ -9,10 +9,12 @@ class VocabularyWordBase(BaseModel):
     chapter_name: str = Field(..., max_length=100)
     group_name: Optional[str] = Field(default=None, max_length=100)
     word: List[str] = Field(..., min_length=1)
+    word_variants: Optional[List[str]] = None
     pos: str = ""
     meaning: str = ""
     example: str = ""
     extra: str = ""
+    metadata: str = ""
 
     @field_validator("word")
     @classmethod
@@ -44,6 +46,8 @@ class VocabularyWordUpdate(BaseModel):
     meaning: Optional[str] = None
     example: Optional[str] = None
     extra: Optional[str] = None
+    word_variants: Optional[List[str]] = None
+    metadata: Optional[str] = None
 
     @field_validator("word")
     @classmethod
@@ -60,6 +64,27 @@ class VocabularyWordResponse(VocabularyWordBase):
     id: int
     user_id: Optional[int] = None
     source: str
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class CustomVocabularyWordResponse(BaseModel):
+    word: VocabularyWordResponse
+    already_exists: bool = False
+
+
+class VocabularyChapterResponse(BaseModel):
+    id: int
+    chapter_name: str
+    label: str
+    audio: str = ""
+    source: str
+    group_count: int
+    word_count: int
+    sort_order: int
     created_at: datetime
     updated_at: datetime
 

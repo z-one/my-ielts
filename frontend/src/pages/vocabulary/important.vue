@@ -1,7 +1,7 @@
 <!-- eslint-disable eslint-comments/no-unlimited-disable -->
 <script setup>
-import { loadWordProgress, syncWordProgress } from '../../services/sync'
-import vocabulary from './vocabulary'
+import { syncWordProgress } from '../../services/sync'
+import { loadBackendVocabulary } from '../../services/vocabulary'
 import { useAuthStore } from '~/stores/auth'
 
 const authStore = useAuthStore()
@@ -11,6 +11,7 @@ const isShowMeaning = ref(false)
 const isShowSource = ref(false)
 const isAutoPlayWordAudio = ref(false)
 const isHideMastered = ref(false)
+const isOnlyErrorProne = ref(false)
 const currentPage = ref(1)
 const wordsPerPage = ref(Math.max(1, Number.parseInt(localStorage.getItem('important_words_per_page') || '10', 10)))
 const wordShowSourceMap = reactive(new Map())
@@ -18,8 +19,20 @@ const wordHasInputMap = reactive(new Map())
 
 const trainingStats = ref('')
 const loaded = ref(false)
-const refVocabulary = shallowReactive(vocabulary)
+const refVocabulary = shallowReactive({})
 let audio = null
+
+function replaceVocabulary(nextVocabulary) {
+  for (const key of Object.keys(refVocabulary))
+    delete refVocabulary[key]
+  Object.assign(refVocabulary, nextVocabulary)
+}
+
+async function loadVocabularyData() {
+  const result = await loadBackendVocabulary({ includeProgress: authStore.isAuthenticated })
+  if (Object.keys(result.vocabulary).length > 0)
+    replaceVocabulary(result.vocabulary)
+}
 
 // 从后端获取所有重点单词（focusLevel === 2）
 const allImportantWords = ref([])
@@ -54,14 +67,30 @@ async function loadImportantWords() {
   console.log('加载了', importantWords.length, '个重点单词')
 }
 
-// 获取当前显示的重点单词
-const currentWords = computed(() => {
+function isErrorProneWord(item) {
+  const correctCount = item.correctCount || 0
+  const errorCount = item.errorCount || 0
+  return errorCount > 0 && errorCount >= correctCount
+}
+
+const filteredImportantWords = computed(() => {
   let words = [...allImportantWords.value]
 
   // 隐藏已掌握的单词（正确10次）
   if (isHideMastered.value) {
     words = words.filter(item => (item.correctCount || 0) < 10)
   }
+
+  if (isOnlyErrorProne.value) {
+    words = words.filter(isErrorProneWord)
+  }
+
+  return words
+})
+
+// 获取当前显示的重点单词
+const currentWords = computed(() => {
+  const words = filteredImportantWords.value
 
   // 分页
   const start = (currentPage.value - 1) * wordsPerPage.value
@@ -71,11 +100,7 @@ const currentWords = computed(() => {
 
 // 总页数
 const totalPages = computed(() => {
-  let words = [...allImportantWords.value]
-  if (isHideMastered.value) {
-    words = words.filter(item => (item.correctCount || 0) < 10)
-  }
-  return Math.ceil(words.length / wordsPerPage.value)
+  return Math.ceil(filteredImportantWords.value.length / wordsPerPage.value)
 })
 
 // 加载进度
@@ -86,26 +111,10 @@ async function loadProgress() {
   }
 
   try {
-    const chapters = Object.keys(refVocabulary)
-    for (const chapter of chapters) {
-      const progressData = await loadWordProgress(chapter)
-      if (progressData && refVocabulary[chapter]) {
-        const savedProgress = progressData?.words || {}
-        const words = refVocabulary[chapter].words
-        for (const group of words) {
-          for (const item of group) {
-            const saved = savedProgress[item.id]
-            if (saved) {
-              item.spellValue = saved.spellValue || ''
-              item.spellError = saved.spellError
-              item.correctCount = saved.correctCount || 0
-              item.errorCount = saved.errorCount || 0
-              item.focusLevel = saved.focusLevel ?? 0
-              item.showSource = saved.showSource || false
-              wordShowSourceMap.set(item.id, saved.showSource || false)
-            }
-          }
-        }
+    for (const chapter of Object.values(refVocabulary)) {
+      for (const group of chapter.words || []) {
+        for (const item of group)
+          wordShowSourceMap.set(item.id, item.showSource || false)
       }
     }
     // 加载完进度后，重新构建重点单词列表
@@ -139,7 +148,6 @@ async function saveProgress() {
           spellError: item.spellError || false,
           correctCount: item.correctCount || 0,
           errorCount: item.errorCount || 0,
-          focusLevel: item.focusLevel ?? 0,
           showSource: wordShowSourceMap.get(item.id) || false,
         }
       }
@@ -363,7 +371,8 @@ function updateStats() {
   const total = allImportantWords.value.length
   const mastered = allImportantWords.value.filter(w => (w.correctCount || 0) >= 10).length
   const inProgress = total - mastered
-  trainingStats.value = `总计 ${total} 个重点单词，已掌握 ${mastered} 个，学习中 ${inProgress} 个`
+  const errorProne = allImportantWords.value.filter(isErrorProneWord).length
+  trainingStats.value = `总计 ${total} 个重点单词，已掌握 ${mastered} 个，学习中 ${inProgress} 个，易错/易忘 ${errorProne} 个`
 }
 
 // 分页导航
@@ -417,7 +426,7 @@ function getVisiblePages() {
   return pages
 }
 
-watch([isHideMastered], () => {
+watch([isHideMastered, isOnlyErrorProne], () => {
   currentPage.value = 1
 })
 
@@ -439,6 +448,9 @@ watch([isTrainingModel], () => {
 })
 
 onMounted(async () => {
+  loaded.value = false
+  await loadVocabularyData()
+
   // 初始化语音合成（需要用户交互后才能使用）
   if ('speechSynthesis' in window) {
     console.log('浏览器支持语音合成')
@@ -521,6 +533,14 @@ onMounted(async () => {
           <span class="ms-3 text-sm font-medium text-green-600 dark:text-green-400">隐藏已掌握</span>
         </label>
 
+        <label v-if="isTrainingModel" class="ml-2 inline-flex cursor-pointer items-center">
+          <input v-model="isOnlyErrorProne" type="checkbox" class="peer sr-only">
+          <div
+            class="peer relative h-6 w-11 rounded-full bg-gray-200 after:absolute after:start-[2px] after:top-[2px] after:h-5 after:w-5 after:border after:border-gray-300 dark:border-gray-600 after:rounded-full after:bg-white dark:bg-gray-700 peer-checked:bg-red-600 peer-focus:outline-none peer-focus:ring-4 peer:focus:ring-red-300 after:transition-all after:content-[''] peer-checked:after:translate-x-full peer-checked:after:border-white dark:peer-focus:ring-red-800 rtl:peer-checked:after:-translate-x-full"
+          />
+          <span class="ms-3 text-sm font-medium text-red-600 dark:text-red-400">易错/易忘</span>
+        </label>
+
         <div class="ml-4 flex items-center gap-2">
           <span class="text-sm text-gray-700 dark:text-gray-300">每页单词：</span>
           <select
@@ -552,7 +572,7 @@ onMounted(async () => {
             <th class="p-4 text-left text-xs font-medium tracking-wider text-gray-500 dark:text-white">
               序号
             </th>
-            <th class="p-4 text-left text-xs font-medium tracking-wider text-gray-500 dark:text-white">
+            <th class="w-[20%] min-w-56 p-4 text-left text-xs font-medium tracking-wider text-gray-500 dark:text-white">
               单词
             </th>
             <th class="p-4 text-left text-xs font-medium tracking-wider text-gray-500 dark:text-white">
@@ -588,9 +608,9 @@ onMounted(async () => {
             <td class="p-4">
               {{ (currentPage - 1) * wordsPerPage + index + 1 }}
             </td>
-            <td>
+            <td class="w-[20%] min-w-56 p-4">
               <i
-                class="i-ph-speaker-simple-high-bold inline-block cursor-pointer"
+                class="i-ph-speaker-simple-high-bold inline-block cursor-pointer align-middle"
                 @click="playWordAudio(item)"
               />
 
@@ -613,7 +633,7 @@ onMounted(async () => {
                 >
               </template>
 
-              <div v-if="!isTrainingModel" class="relative group mt-2">
+              <div v-if="!isTrainingModel" class="relative group ml-3 inline-block align-middle">
                 <p v-for="w in item.word" :key="w" class="font-bold">
                   <a
                     class="hover:underline"
@@ -630,7 +650,7 @@ onMounted(async () => {
                 </div>
               </div>
 
-              <div v-if="isTrainingModel && shouldShowWordSource(item)" class="relative group mt-2">
+              <div v-if="isTrainingModel && shouldShowWordSource(item)" class="relative group ml-3 inline-block align-middle">
                 <p v-for="w in item.word" :key="w" class="font-bold">
                   <a
                     class="hover:underline"

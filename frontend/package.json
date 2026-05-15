@@ -3,6 +3,9 @@
   "packageManager": "pnpm@8.6.0",
   "scripts": {
     "build": "vite build",
+    "build:docker": "vite build --mode docker",
+    "build:local": "vite build --mode development",
+    "build:prod": "vite build --mode production",
     "dev": "vite --port 3333 --open",
     "lint": "eslint .",
     "typecheck": "vue-tsc --noEmit",

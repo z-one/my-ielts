@@ -67,10 +67,11 @@ def update_word_progress(
         db.commit()
         db.refresh(progress)
     else:
+        create_data = progress_update.model_dump(exclude_unset=True, exclude_none=True)
         new_progress = WordProgress(
             user_id=current_user.id,
             word_id=word_id,
-            **progress_update.model_dump()
+            **create_data
         )
         db.add(new_progress)
         db.commit()
@@ -100,10 +101,13 @@ def sync_local_progress(
         if progress:
             # 更新现有记录
             for key, value in word_data.items():
+                if key == "focus_level":
+                    continue
                 if hasattr(progress, key) and value is not None:
                     setattr(progress, key, value)
             updated_count += 1
         else:
+            word_data = {k: v for k, v in word_data.items() if k != "focus_level"}
             # 创建新记录
             new_progress = WordProgress(
                 user_id=current_user.id,
@@ -145,7 +149,7 @@ def batch_update_words(
             WordProgress.chapter_name == chapter_name
         ).first()
 
-        update_dict = {k: v for k, v in word_data.items() if k not in ["word_id", "chapter_name"] and v is not None}
+        update_dict = {k: v for k, v in word_data.items() if k not in ["word_id", "chapter_name", "focus_level"] and v is not None}
 
         if progress:
             for key, value in update_dict.items():

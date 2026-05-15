@@ -1,5 +1,5 @@
 import { chaptersAPI, wordsAPI, settingsAPI, examsAPI } from '../api'
-import vocabulary from '../pages/vocabulary/vocabulary'
+import { loadBackendVocabulary } from './vocabulary'
 
 // 本地存储键名
 const PROGRESS_KEY = 'vocabulary_progress'
@@ -90,6 +90,8 @@ function camelToSnake(str) {
 function transformWordData(wordData) {
   const transformed = {}
   for (const [key, value] of Object.entries(wordData)) {
+    if (key === 'focusLevel' || key === 'focus_level')
+      continue
     const dbKey = camelToSnake(key)
     transformed[dbKey] = value
   }
@@ -113,8 +115,9 @@ export async function syncWordProgress(chapterName, progressData = null) {
       words: {},
     }
 
-    // 如果没有提供进度数据，从 vocabulary 中收集
+    // 如果没有提供进度数据，从统一词库服务中收集。
     if (!progressData) {
+      const { vocabulary } = await loadBackendVocabulary({ includeProgress: true })
       const chapterData = vocabulary[chapterName]
       if (!chapterData || !chapterData.words) {
         console.log(`章节 "${chapterName}" 不存在或没有单词`)
@@ -130,7 +133,6 @@ export async function syncWordProgress(chapterName, progressData = null) {
             correct_count: item.correctCount || 0,
             error_count: item.errorCount || 0,
             show_source: item.showSource || false,
-            focus_level: item.focusLevel ?? 0,
           }
 
           // 如果 spell_value 为空，使用单词原词
@@ -143,17 +145,18 @@ export async function syncWordProgress(chapterName, progressData = null) {
       }
     }
     else {
+      const fallbackResult = await loadBackendVocabulary({ includeProgress: false })
+      const chapterData = fallbackResult.vocabulary[chapterName]
       // 使用提供的进度数据
       for (const [wordId, wordData] of Object.entries(progressData.words)) {
         const transformed = transformWordData(wordData)
 
         // 如果 spell_value 为空，从 vocabulary 中查找单词原词
         if (!transformed.spell_value || transformed.spell_value === '') {
-          const chapterData = vocabulary[chapterName]
           if (chapterData && chapterData.words) {
             for (const group of chapterData.words) {
               for (const item of group) {
-                if (item.id === wordId && item.word && item.word.length > 0) {
+                if (String(item.id) === String(wordId) && item.word && item.word.length > 0) {
                   transformed.spell_value = item.word[0]
                   break
                 }
@@ -177,6 +180,18 @@ export async function syncWordProgress(chapterName, progressData = null) {
     console.error('同步单词进度失败:', error)
     throw error
   }
+}
+
+export async function updateWordFocusLevel(wordId, chapterName, focusLevel) {
+  if (!isAuthenticated()) {
+    console.log('未登录，跳过单词重点等级同步')
+    return
+  }
+
+  return wordsAPI.updateProgress(wordId, {
+    chapter_name: chapterName,
+    focus_level: focusLevel,
+  })
 }
 
 /**

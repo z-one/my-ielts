@@ -3,7 +3,7 @@ from functools import lru_cache
 
 
 class Settings(BaseSettings):
-    DATABASE_URL: str = "sqlite:///./ielts.db"
+    DATABASE_URL: str = "postgresql://ielts:ielts_password@localhost:5432/ielts_db"
     SECRET_KEY: str = "your-secret-key-change-this"
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 360

@@ -1,6 +1,6 @@
 <script setup>
-import vocabulary from './vocabulary'
-import { ref, computed, onMounted } from 'vue'
+import { ref } from 'vue'
+import { searchBackendVocabulary } from '../../services/vocabulary'
 
 const searchQuery = ref('')
 const searchResults = ref([])
@@ -8,7 +8,7 @@ const isSearching = ref(false)
 const searchTime = ref(0)
 
 // 搜索单词
-function searchWords() {
+async function searchWords() {
   if (!searchQuery.value.trim()) {
     searchResults.value = []
     return
@@ -16,41 +16,24 @@ function searchWords() {
 
   isSearching.value = true
   const startTime = performance.now()
-  const query = searchQuery.value.toLowerCase().trim()
-  const results = []
-
-  // 遍历所有章节和单词
-  for (const chapterName in vocabulary) {
-    const chapter = vocabulary[chapterName]
-    if (chapter.words) {
-      for (const group of chapter.words) {
-        for (const wordItem of group) {
-          // 检查单词、释义、例句是否包含搜索词
-          const wordMatch = wordItem.word.some(w => w.toLowerCase().includes(query))
-          const meaningMatch = wordItem.meaning.toLowerCase().includes(query)
-          const exampleMatch = wordItem.example.toLowerCase().includes(query)
-
-          if (wordMatch || meaningMatch || exampleMatch) {
-            results.push({
-              ...wordItem,
-              chapter: chapterName
-            })
-          }
-        }
-      }
-    }
+  try {
+    searchResults.value = await searchBackendVocabulary(searchQuery.value.trim())
+    searchTime.value = performance.now() - startTime
   }
-
-  searchResults.value = results
-  searchTime.value = performance.now() - startTime
-  isSearching.value = false
+  catch (error) {
+    console.error('搜索单词失败:', error)
+    searchResults.value = []
+  }
+  finally {
+    isSearching.value = false
+  }
 }
 
 // 播放单词音频
 function playAudio(word) {
   // 尝试不同的音频路径
   const audioPaths = [
-    `vocabulary/audio/${word.chapter}/${word.word[0]}.mp3`,
+    `vocabulary/audio/${word.chapterName}/${word.word[0]}.mp3`,
     `179_audios/${word.word[0].toLowerCase()}.mp3`
   ]
 
@@ -87,18 +70,6 @@ function copyWordInfo(word) {
   })
 }
 
-// 监听搜索框输入，使用防抖
-let searchTimer = null
-function handleSearchInput() {
-  if (searchTimer) {
-    clearTimeout(searchTimer)
-  }
-  searchTimer = setTimeout(searchWords, 300)
-}
-
-onMounted(() => {
-  // 初始化时可以加载所有单词到内存，提高搜索速度
-})
 </script>
 
 <template>
@@ -119,10 +90,10 @@ onMounted(() => {
         <div class="relative">
           <input
             v-model="searchQuery"
-            @input="handleSearchInput"
             type="text"
             placeholder="输入单词、释义或例句进行搜索..."
             class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-700 dark:border-gray-600 dark:text-white dark:placeholder-gray-400"
+            @keyup.enter="searchWords"
           />
           <button
             @click="searchWords"
@@ -161,7 +132,7 @@ onMounted(() => {
                 </h4>
                 <span class="text-sm text-gray-500 dark:text-gray-400">{{ word.pos }}</span>
                 <span class="text-xs px-2 py-1 bg-gray-100 text-gray-800 rounded-full dark:bg-gray-700 dark:text-gray-300">
-                  {{ word.chapter }}
+                  {{ word.chapterName }}
                 </span>
               </div>
               <p class="mt-1 text-gray-700 dark:text-gray-300">{{ word.meaning }}</p>

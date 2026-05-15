@@ -1,7 +1,7 @@
 <!-- eslint-disable eslint-comments/no-unlimited-disable -->
 <script setup generic="T extends any, O extends any">
-import { loadChapterStatus as loadChapterStatusFromBackend, loadWordProgress as loadWordProgressFromBackend, loadUserSettings as loadUserSettingsFromBackend, syncUserSettings, syncWordProgress, updateChapterStatus } from '../../services/sync'
-import vocabulary from './vocabulary'
+import { loadUserSettings as loadUserSettingsFromBackend, syncUserSettings, syncWordProgress, updateChapterStatus, updateWordFocusLevel } from '../../services/sync'
+import { CUSTOM_CHAPTER_NAME, createBackendCustomWords, loadBackendVocabulary } from '../../services/vocabulary'
 import { useAuthStore } from '~/stores/auth'
 
 const authStore = useAuthStore()
@@ -43,11 +43,30 @@ const wordHasInputMap = reactive(new Map())
 
 const trainingStats = ref('')
 const keyword = ref('')
-const chapters = Object.keys(vocabulary)
-const category = ref(localStorage.getItem(CHAPTER_KEY) || chapters[0])
+const chapters = ref([])
+const category = ref(localStorage.getItem(CHAPTER_KEY) || chapters.value[0])
 
 const loaded = ref(false)
-const refVocabulary = shallowReactive(vocabulary)
+const refVocabulary = shallowReactive({})
+
+function replaceVocabulary(nextVocabulary) {
+  for (const key of Object.keys(refVocabulary))
+    delete refVocabulary[key]
+  Object.assign(refVocabulary, nextVocabulary)
+  chapters.value = Object.keys(refVocabulary)
+  const savedChapter = localStorage.getItem(CHAPTER_KEY)
+  category.value = savedChapter && refVocabulary[savedChapter] ? savedChapter : chapters.value[0]
+}
+
+async function loadVocabularyData() {
+  const result = await loadBackendVocabulary({ includeProgress: authStore.isAuthenticated })
+  if (Object.keys(result.vocabulary).length > 0)
+    replaceVocabulary(result.vocabulary)
+  if (authStore.isAuthenticated) {
+    chapterLearnStatus.value = result.chapterStatus || {}
+    localStorage.setItem(CHAPTER_STATUS_KEY, JSON.stringify(chapterLearnStatus.value))
+  }
+}
 
 // 获取经过筛选后的所有组（用于分页计算）
 const filteredWordGroups = computed(() => {
@@ -114,7 +133,7 @@ const totalPages = computed(() => {
 // 章节学习状态：计算每个章节的学习进度
 const chapterStatus = computed(() => {
   const status = {}
-  for (const chapterName of chapters) {
+  for (const chapterName of chapters.value) {
     const chapter = refVocabulary[chapterName]
     if (!chapter || !chapter.words) {
       status[chapterName] = { progress: 0, mastered: 0, total: 0, label: chapterName }
@@ -146,16 +165,16 @@ const chapterStatus = computed(() => {
 // 过滤后的章节列表
 const filteredChapters = computed(() => {
   if (statusFilter.value === 'all')
-    return chapters
+    return chapters.value
 
-  return chapters.filter((chapterName) => {
+  return chapters.value.filter((chapterName) => {
     const status = chapterLearnStatus.value[chapterName] || ChapterStatus.NOT_LEARNED
     return status === statusFilter.value
   })
 })
 
 const wordList = computed(() => {
-  const result = structuredClone(vocabulary) // deep clone
+  const result = structuredClone(refVocabulary) // deep clone
   // const keywordValue = keyword.value.trim().toLowerCase()
   const categoryValue = category.value
 
@@ -186,29 +205,9 @@ watch(category, async (newVal, oldVal) => {
   // console.log(newVal, oldVal)
   localStorage.setItem(CHAPTER_KEY, newVal)
 
-  // 切换章节时加载进度
-  if (authStore.isAuthenticated) {
-    // 已登录：先尝试从后端加载
-    try {
-      const backendProgress = await loadWordProgressFromBackend(newVal)
-      if (backendProgress) {
-        // 后端有数据，使用后端数据
-        applyProgress(backendProgress)
-      }
-      else {
-        // 后端没有数据，使用本地数据
-        await loadProgress()
-      }
-    }
-    catch (error) {
-      console.error('从后端加载进度失败:', error)
-      await loadProgress()
-    }
-  }
-  else {
-    // 未登录：使用本地数据
+  // 登录用户的进度已经在加载词库时一次性合并；未登录继续使用本地数据。
+  if (!authStore.isAuthenticated)
     await loadProgress()
-  }
 })
 
 // 保存练习进度
@@ -231,7 +230,6 @@ async function saveProgress() {
           correctCount: item.correctCount || 0,
           errorCount: item.errorCount || 0,
           showSource: showSource || false,
-          focusLevel: item.focusLevel ?? 0,
         }
       }
     }
@@ -442,8 +440,13 @@ function setWordFocusLevel(item, level) {
   if (saveProgressTimer)
     clearTimeout(saveProgressTimer)
 
-  saveProgressTimer = setTimeout(() => {
-    saveProgress()
+  saveProgressTimer = setTimeout(async () => {
+    try {
+      await updateWordFocusLevel(item.id, category.value, level)
+    }
+    catch (error) {
+      console.error('同步单词重点等级失败:', error)
+    }
     saveProgressTimer = null
   }, 1000) // 1秒后保存
 }
@@ -483,7 +486,6 @@ async function saveAllChaptersProgress() {
         correctCount: item.correctCount || 0,
         errorCount: item.errorCount || 0,
         showSource: item.showSource || false,
-        focusLevel: item.focusLevel ?? 0,
       }
     }
   }
@@ -544,6 +546,8 @@ const touchStartY = ref(0)
 const touchEndY = ref(0)
 
 onMounted(async () => {
+  loaded.value = false
+  await loadVocabularyData()
   loaded.value = true
 
   // 检测是否为移动设备
@@ -563,32 +567,6 @@ onMounted(async () => {
 
   // 加载练习进度
   if (authStore.isAuthenticated) {
-    // 已登录：先尝试从后端加载
-    try {
-      const backendProgress = await loadWordProgressFromBackend(category.value)
-      if (backendProgress)
-        applyProgress(backendProgress)
-      else
-        loadProgress()
-    }
-    catch (error) {
-      console.error('从后端加载进度失败:', error)
-      loadProgress()
-    }
-
-    // 从后端加载章节学习状态
-    try {
-      const backendChapterStatus = await loadChapterStatusFromBackend()
-      if (backendChapterStatus)
-        chapterLearnStatus.value = backendChapterStatus
-      else
-        loadChapterStatus()
-    }
-    catch (error) {
-      console.error('从后端加载章节状态失败:', error)
-      loadChapterStatus()
-    }
-
     // 从后端加载用户设置
     try {
       const backendSettings = await loadUserSettingsFromBackend()
@@ -946,7 +924,7 @@ async function removeSingleWord(item) {
   chapter.wordCount = words.reduce((sum, group) => sum + group.length, 0)
 
   // 保存自添加生词章节的特殊处理
-  if (category.value === '23 - 自添加生词')
+  if (category.value === CUSTOM_CHAPTER_NAME)
     saveCustomWords()
 
   // 保存练习进度
@@ -1002,7 +980,7 @@ async function removeErrorWords() {
   chapter.wordCount = words.reduce((sum, group) => sum + group.length, 0)
 
   // 保存自添加生词章节的特殊处理
-  if (category.value === '23 - 自添加生词')
+  if (category.value === CUSTOM_CHAPTER_NAME)
     saveCustomWords()
 
   // 保存练习进度
@@ -1191,6 +1169,9 @@ function initWordProperties() {
 // 初始化自添加生词章节
 const CUSTOM_WORDS_KEY = 'vocabulary_custom_words'
 function initCustomWords() {
+  if (authStore.isAuthenticated && refVocabulary[CUSTOM_CHAPTER_NAME])
+    return
+
   const customWords = localStorage.getItem(CUSTOM_WORDS_KEY)
   const defaultCustomWords = {
     groupCount: 0,
@@ -1202,7 +1183,7 @@ function initCustomWords() {
   if (customWords) {
     try {
       const parsed = JSON.parse(customWords)
-      refVocabulary['23 - 自添加生词'] = {
+      refVocabulary[CUSTOM_CHAPTER_NAME] = {
         ...defaultCustomWords,
         ...parsed,
         groupCount: parsed.groupCount || 0,
@@ -1212,15 +1193,15 @@ function initCustomWords() {
     }
     catch (error) {
       console.error('加载自添加生词失败:', error)
-      refVocabulary['23 - 自添加生词'] = defaultCustomWords
+      refVocabulary[CUSTOM_CHAPTER_NAME] = defaultCustomWords
     }
   }
   else {
-    refVocabulary['23 - 自添加生词'] = defaultCustomWords
+    refVocabulary[CUSTOM_CHAPTER_NAME] = defaultCustomWords
   }
 
   // 初始化自定义单词的 showSource 属性
-  const customChapter = refVocabulary['23 - 自添加生词']
+  const customChapter = refVocabulary[CUSTOM_CHAPTER_NAME]
   if (customChapter.words) {
     for (const group of customChapter.words) {
       for (const item of group) {
@@ -1243,7 +1224,7 @@ function initCustomWords() {
 
 // 保存自添加生词
 function saveCustomWords() {
-  localStorage.setItem(CUSTOM_WORDS_KEY, JSON.stringify(refVocabulary['23 - 自添加生词']))
+  localStorage.setItem(CUSTOM_WORDS_KEY, JSON.stringify(refVocabulary[CUSTOM_CHAPTER_NAME]))
 }
 
 // 新添加单词的临时数据
@@ -1268,16 +1249,18 @@ const newWord = ref({
   meaning: '',
   example: '',
 })
+const existingCustomWords = ref([])
 const selectedNewWordPos = computed(() => newWord.value.pos.length ? newWord.value.pos.join('/') : '请选择词性')
 
 // 添加新单词
-function addNewWord() {
+async function addNewWord() {
+  existingCustomWords.value = []
   if (!newWord.value.word.trim() || !newWord.value.meaning.trim()) {
     alert('请填写单词和中文释义')
     return
   }
 
-  const customWords = refVocabulary['23 - 自添加生词']
+  const customWords = refVocabulary[CUSTOM_CHAPTER_NAME]
   if (!customWords)
     return
 
@@ -1289,20 +1272,43 @@ function addNewWord() {
   // 创建新组或添加到现有组
   const groupName = `自定义组 ${(customWords.words?.length || 0) + 1}`
   const pos = newWord.value.pos.length ? newWord.value.pos.join('/') : 'n.'
-  const newGroup = words.map((word, index) => ({
-    id: `custom_${Date.now()}_${index}`,
-    word: [word],
-    pos,
-    meaning: newWord.value.meaning,
-    example: newWord.value.example || '',
-    extra: '',
-    label: groupName,
-  }))
+  let newGroup
+  if (authStore.isAuthenticated) {
+    try {
+      const result = await createBackendCustomWords({
+        words,
+        pos,
+        meaning: newWord.value.meaning,
+        example: newWord.value.example,
+      })
+      newGroup = result.created
+      existingCustomWords.value = result.existing
+      newGroup.label = groupName
+    }
+    catch (error) {
+      console.error('添加生词入库失败:', error)
+      alert('添加生词失败，请稍后重试')
+      return
+    }
+  }
+  else {
+    newGroup = words.map((word, index) => ({
+      id: `custom_${Date.now()}_${index}`,
+      word: [word],
+      pos,
+      meaning: newWord.value.meaning,
+      example: newWord.value.example || '',
+      extra: '',
+      label: groupName,
+    }))
+  }
 
-  customWords.words = customWords.words || []
-  customWords.words.push(newGroup)
-  customWords.groupCount = customWords.words.length
-  customWords.wordCount = customWords.words.reduce((sum, group) => sum + group.length, 0)
+  if (newGroup.length > 0) {
+    customWords.words = customWords.words || []
+    customWords.words.push(newGroup)
+    customWords.groupCount = customWords.words.length
+    customWords.wordCount = customWords.words.reduce((sum, group) => sum + group.length, 0)
+  }
 
   // 重置表单
   newWord.value = {
@@ -1312,12 +1318,13 @@ function addNewWord() {
     example: '',
   }
 
-  saveCustomWords()
+  if (!authStore.isAuthenticated)
+    saveCustomWords()
 }
 
 // 删除单词
 function removeWord(groupIndex, wordIndex) {
-  const customWords = refVocabulary['23 - 自添加生词']
+  const customWords = refVocabulary[CUSTOM_CHAPTER_NAME]
   if (!customWords?.words?.[groupIndex])
     return
 
@@ -1335,7 +1342,7 @@ function removeWord(groupIndex, wordIndex) {
 
 // 删除整组
 function removeGroup(groupIndex) {
-  const customWords = refVocabulary['23 - 自添加生词']
+  const customWords = refVocabulary[CUSTOM_CHAPTER_NAME]
   if (!customWords?.words)
     return
 
@@ -1350,7 +1357,7 @@ function removeGroup(groupIndex) {
 // 清空所有自定义单词
 function clearCustomWords() {
   if (confirm('确定要清空所有自添加的生词吗？此操作不可恢复。')) {
-    refVocabulary['23 - 自添加生词'] = {
+    refVocabulary[CUSTOM_CHAPTER_NAME] = {
       groupCount: 0,
       wordCount: 0,
       audio: '',
@@ -1370,7 +1377,7 @@ watch(statusFilter, (newStatus) => {
   if (newStatus !== 'all') {
     // 如果当前选择的章节不在过滤后的列表中，切换到第一个符合条件的章节
     if (!filteredChapters.value.includes(category.value)) {
-      category.value = filteredChapters.value[0] || chapters[0]
+      category.value = filteredChapters.value[0] || chapters.value[0]
     }
   }
 })
@@ -2195,6 +2202,36 @@ watch(
               class="sm:col-span-2 mobile-input"
             >
           </div>
+          <div
+            v-if="existingCustomWords.length"
+            class="mt-4 space-y-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-900/20 dark:text-amber-100"
+          >
+            <div class="font-medium">
+              已存在的单词，未重复入库：
+            </div>
+            <div
+              v-for="word in existingCustomWords"
+              :key="word.id"
+              class="rounded bg-white/70 p-3 dark:bg-gray-800/70"
+            >
+              <div class="font-bold">
+                {{ word.word.join(' / ') }}
+                <span class="ml-2 font-normal text-xs text-amber-700 dark:text-amber-200">{{ word.source }}</span>
+              </div>
+              <div v-if="word.pos" class="mt-1">
+                {{ word.pos }}
+              </div>
+              <div v-if="word.meaning" class="mt-1">
+                {{ word.meaning }}
+              </div>
+              <div v-if="word.example" class="mt-1 text-xs text-amber-800 dark:text-amber-100">
+                {{ word.example }}
+              </div>
+              <div v-if="word.extra" class="mt-1 text-xs text-amber-800 dark:text-amber-100">
+                {{ word.extra }}
+              </div>
+            </div>
+          </div>
           <div class="mt-4 flex justify-end">
             <button
               type="button"
@@ -2210,10 +2247,10 @@ watch(
         <div class="rounded-lg bg-gray-50 p-4 dark:bg-gray-700">
           <div class="mb-4 flex items-center justify-between">
             <h4 class="text-lg font-medium text-gray-900 dark:text-white">
-              已添加生词（{{ refVocabulary['23 - 自添加生词']?.wordCount || 0 }} 个）
+              已添加生词（{{ refVocabulary[CUSTOM_CHAPTER_NAME]?.wordCount || 0 }} 个）
             </h4>
             <button
-              v-if="(refVocabulary['23 - 自添加生词']?.wordCount || 0) > 0"
+              v-if="(refVocabulary[CUSTOM_CHAPTER_NAME]?.wordCount || 0) > 0"
               type="button"
               class="rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white dark:bg-red-500 hover:bg-red-700 focus:outline-none focus:ring-4 focus:ring-red-300 dark:hover:bg-red-600"
               @click="clearCustomWords"
@@ -2224,7 +2261,7 @@ watch(
 
           <div class="max-h-96 overflow-auto">
             <div
-              v-for="(group, groupIndex) in (refVocabulary['23 - 自添加生词']?.words || [])"
+              v-for="(group, groupIndex) in (refVocabulary[CUSTOM_CHAPTER_NAME]?.words || [])"
               :key="group.label"
               class="mb-4 border border-gray-200 rounded-lg bg-white p-4 dark:border-gray-600 dark:bg-gray-800"
             >

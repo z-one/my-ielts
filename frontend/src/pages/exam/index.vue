@@ -233,7 +233,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useAuthStore } from '~/stores/auth'
 import { saveExamRecord } from '../../services/sync'
-import vocabulary from '../vocabulary/vocabulary'
+import { CUSTOM_CHAPTER_NAME, loadBackendVocabulary } from '../../services/vocabulary'
 
 const authStore = useAuthStore()
 
@@ -250,6 +250,7 @@ const ChapterStatus = {
 
 const EXAM_WORDS_COUNT = 100 // 每次抽检100个单词
 const chapterLearnStatus = ref({}) // 章节学习状态映射
+const vocabularyData = shallowReactive({})
 
 // 考试状态
 const examStarted = ref(false)
@@ -271,6 +272,21 @@ const resultStats = ref({
 
 let audio = null
 
+function replaceVocabulary(nextVocabulary) {
+  for (const key of Object.keys(vocabularyData))
+    delete vocabularyData[key]
+  Object.assign(vocabularyData, nextVocabulary)
+}
+
+async function loadExamVocabulary() {
+  const result = await loadBackendVocabulary({ includeProgress: authStore.isAuthenticated })
+  replaceVocabulary(result.vocabulary)
+  if (authStore.isAuthenticated) {
+    chapterLearnStatus.value = result.chapterStatus || {}
+    localStorage.setItem(CHAPTER_STATUS_KEY, JSON.stringify(chapterLearnStatus.value))
+  }
+}
+
 // 单词分布统计
 const wordDistribution = computed(() => {
   const distribution = {}
@@ -290,8 +306,8 @@ function collectFocusWords() {
   const focusWords = []
 
   // 遍历所有章节
-  for (const [chapterName, chapterData] of Object.entries(vocabulary)) {
-    if (chapterName === '23 - 自添加生词')
+  for (const [chapterName, chapterData] of Object.entries(vocabularyData)) {
+    if (chapterName === CUSTOM_CHAPTER_NAME)
       continue
 
     // 只收集已学习、已完成或已熟练章节的单词
@@ -365,7 +381,7 @@ function startExam() {
 
   if (focusWords.length === 0) {
     // 统计各章节状态,给用户友好提示
-    const totalChapters = Object.keys(vocabulary).filter(k => k !== '23 - 自添加生词').length
+    const totalChapters = Object.keys(vocabularyData).filter(k => k !== CUSTOM_CHAPTER_NAME).length
     const learnedChapters = Object.keys(chapterLearnStatus.value).filter(
       chapter => chapterLearnStatus.value[chapter] !== ChapterStatus.NOT_LEARNED
     ).length
@@ -505,9 +521,10 @@ function finishExam() {
   }
 }
 
-onMounted(() => {
-  // 先加载章节状态
-  loadChapterStatus()
+onMounted(async () => {
+  await loadExamVocabulary()
+  if (!authStore.isAuthenticated)
+    loadChapterStatus()
   // 自动开始考试
   startExam()
 })

@@ -1,4 +1,4 @@
-const API_BASE_URL = 'http://110.40.139.199:8000'
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? ''
 
 // 从 localStorage 获取 token
 function getToken() {
@@ -141,6 +141,25 @@ export const wordsAPI = {
 
   // 同步本地进度
   syncProgress: (syncData) => post('/api/words/sync', syncData),
+}
+
+// 词库 API
+export const vocabularyAPI = {
+  getChapters: () => get('/api/vocabulary/chapters'),
+  getChapterDetails: (source) => get(`/api/vocabulary/chapter-details${source ? `?source=${encodeURIComponent(source)}` : ''}`),
+  getWords: (params = {}) => {
+    const query = new URLSearchParams()
+    if (params.chapterName)
+      query.set('chapter_name', params.chapterName)
+    if (params.source)
+      query.set('source', params.source)
+    const suffix = query.toString() ? `?${query.toString()}` : ''
+    return get(`/api/vocabulary/words${suffix}`)
+  },
+  search: query => get(`/api/vocabulary/search?q=${encodeURIComponent(query)}`),
+  createCustomWord: wordData => post('/api/vocabulary/custom-words', wordData),
+  updateCustomWord: (wordId, wordData) => put(`/api/vocabulary/custom-words/${wordId}`, wordData),
+  deleteCustomWord: wordId => del(`/api/vocabulary/custom-words/${wordId}`),
 }
 
 // 用户设置 API

@@ -18,6 +18,7 @@ class WordProgressCreate(WordProgressBase):
 
 
 class WordProgressUpdate(BaseModel):
+    chapter_name: str | None = None
     spell_value: str | None = None
     spell_error: bool | None = None
     correct_count: int | None = None

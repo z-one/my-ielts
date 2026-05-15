@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>My IELTS 项目结构与架构优化方案</title>
+<link rel="stylesheet" href="assets/fonts.css">
+<link rel="stylesheet" href="assets/base.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body class="tpl-knowledge-arch-blueprint">
+<div class="deck">
+
+  <section class="slide is-active">
+    <div class="kb-grid-bg"></div>
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:38px;margin-bottom:34px">
+      <div>
+        <div class="kb-kicker">My IELTS / Architecture Review</div>
+        <h1 class="kb-h1">项目结构分析<br><span class="rust">与演进蓝图</span></h1>
+        <p class="kb-sub">这份 PPT 用技术方案视角梳理当前代码库：前端学习应用、FastAPI 同步服务、Docker 部署、Cordova App 壳，以及后续“同义词辨析系统”开发前必须先处理的基础问题。</p>
+      </div>
+      <div class="kb-insight">
+        <span class="kk">KEY MESSAGE</span>
+        当前项目能跑，但已经进入“功能继续堆会返工”的阶段。先修编码、环境配置、迁移机制和词汇页结构，再开发同义词系统。
+      </div>
+    </div>
+    <div class="kb-section-label">Current System Snapshot</div>
+    <div class="kb-pipeline">
+      <div class="kb-step">
+        <div class="kb-step-num">Client</div>
+        <div class="kb-step-title">Vue 3 前端</div>
+        <div class="kb-step-body">Vite + Vue Router + Pinia + UnoCSS，承载词汇、听力、阅读、写作、语法等学习页面。</div>
+      </div>
+      <div class="kb-step">
+        <div class="kb-step-num">Server</div>
+        <div class="kb-step-title">FastAPI 后端</div>
+        <div class="kb-step-body">负责注册登录、JWT 鉴权、学习进度、章节状态、用户设置与考试记录。</div>
+      </div>
+      <div class="kb-step hero">
+        <div class="kb-step-num">Data Core</div>
+        <div class="kb-step-title">静态词库 + 进度库</div>
+        <div class="kb-step-body">词库主数据在前端 vocabulary.js；后端存用户态数据。后续扩展要尊重这个边界。</div>
+      </div>
+      <div class="kb-step">
+        <div class="kb-step-num">Delivery</div>
+        <div class="kb-step-title">Docker / Cordova</div>
+        <div class="kb-step-body">Docker 支持服务编排；Cordova 将前端构建产物包装成 Android App。</div>
+      </div>
+    </div>
+    <div class="notes">开场时先说明，这不是单纯介绍目录，而是为了下一阶段开发做架构体检。重点是识别哪些地方会影响未来同义词辨析系统，哪些问题需要先处理，避免把新功能建在不稳定的基础上。</div>
+    <div class="kb-footer"><span>My IELTS Architecture</span><span>01 / 11</span></div>
+  </section>
+
+  <section class="slide">
+    <div class="kb-grid-bg"></div>
+    <div class="kb-kicker">Repository Map</div>
+    <h1 class="kb-h1" style="font-size:48px">代码库由四个<span class="rust">主系统</span>组成</h1>
+    <div class="kb-grid-2">
+      <div class="kb-card">
+        <h4>frontend</h4>
+        <p>主学习应用。页面位于 src/pages，词汇数据和大量音频资源位于 public 与 vocabulary.js。</p>
+        <span class="kb-tag">Vue 3</span><span class="kb-tag">Vite</span><span class="kb-tag">Pinia</span>
+      </div>
+      <div class="kb-card">
+        <h4>backend</h4>
+        <p>FastAPI 服务。api / models / schemas / core 分层清晰，当前主要处理用户态数据同步。</p>
+        <span class="kb-tag">FastAPI</span><span class="kb-tag">SQLAlchemy</span><span class="kb-tag">JWT</span>
+      </div>
+      <div class="kb-card">
+        <h4>docker</h4>
+        <p>生产与部署配置。包含前端 Nginx、后端 Dockerfile、PostgreSQL 初始化和 compose 编排。</p>
+        <span class="kb-tag">Nginx</span><span class="kb-tag">PostgreSQL</span><span class="kb-tag">Redis</span>
+      </div>
+      <div class="kb-card">
+        <h4>my-ielts-app</h4>
+        <p>Cordova Android 工程。www 目录存放构建后的静态资源，适合移动端壳发布。</p>
+        <span class="kb-tag">Cordova</span><span class="kb-tag">Android</span><span class="kb-tag">Static Web</span>
+      </div>
+    </div>
+    <div class="notes">这一页讲项目的四块拼图。前端是真正的产品主体，后端是同步与账户能力，Docker 是部署环境，Cordova 是移动端包装。后续同义词系统主要会改动 frontend 和 backend，Docker 需要配合环境变量和数据库迁移。</div>
+    <div class="kb-footer"><span>Repository Map</span><span>02 / 11</span></div>
+  </section>
+
+  <section class="slide">
+    <div class="kb-grid-bg"></div>
+    <div class="kb-kicker">Frontend Architecture</div>
+    <h1 class="kb-h1" style="font-size:48px">前端是<span class="rust">资料库 + 练习器</span></h1>
+    <div class="kb-grid-3">
+      <div class="kb-card">
+        <h4>页面路由</h4>
+        <ul>
+          <li>vite-plugin-pages 自动生成路由</li>
+          <li>Hash History 适配静态部署</li>
+          <li>路由守卫基于 access_token</li>
+        </ul>
+      </div>
+      <div class="kb-card">
+        <h4>核心模块</h4>
+        <ul>
+          <li>vocabulary：词汇、搜索、重点词</li>
+          <li>listening：179 考点词和练习</li>
+          <li>reading / writing / grammar</li>
+        </ul>
+      </div>
+      <div class="kb-card">
+        <h4>状态与同步</h4>
+        <ul>
+          <li>localStorage 保存未登录进度</li>
+          <li>Pinia 管理认证态</li>
+          <li>services/sync.js 登录后同步</li>
+        </ul>
+      </div>
+    </div>
+    <div class="kb-section-label">Current Frontend Risk</div>
+    <div class="kb-card" style="background:var(--kb-rust-soft);border-color:var(--kb-rust)">
+      <h4>vocabulary/index.vue 过重</h4>
+      <p>一个文件同时承担分页、训练模式、过滤、音频、进度保存、后端同步和 UI 渲染。后续再加入“同义词辨析入口”，会让主页面更难维护。</p>
+    </div>
+    <div class="notes">这一页强调前端的定位。它不是简单页面，而是资料、练习和同步逻辑混在一起的应用。最需要注意的是词汇主页面已经变厚，后续新增功能前应该先拆组件和 composable。</div>
+    <div class="kb-footer"><span>Frontend Architecture</span><span>03 / 11</span></div>
+  </section>
+
+  <section class="slide">
+    <div class="kb-grid-bg"></div>
+    <div class="kb-kicker">Backend Architecture</div>
+    <h1 class="kb-h1" style="font-size:48px">后端是<span class="rust">用户数据同步层</span></h1>
+    <table class="kb-table">
+      <thead>
+        <tr>
+          <th>模块</th>
+          <th>职责</th>
+          <th>后续影响</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>auth.py</td>
+          <td>注册、登录、JWT token、当前用户</td>
+          <td>同义词管理必须复用 current_user 隔离数据</td>
+        </tr>
+        <tr>
+          <td>words.py</td>
+          <td>单词进度、正确错误次数、关注等级、批量同步</td>
+          <td>可作为“按 word_id 查询扩展信息”的设计参考</td>
+        </tr>
+        <tr>
+          <td>chapters.py</td>
+          <td>章节学习状态</td>
+          <td>同义词组可挂载 chapter_name 做筛选</td>
+        </tr>
+        <tr>
+          <td>settings.py</td>
+          <td>用户设置</td>
+          <td>可扩展同义词页面偏好，但第一期不必做</td>
+        </tr>
+        <tr>
+          <td>exams.py</td>
+          <td>考试记录存储与查询</td>
+          <td>展示了 JSON 字段存储复杂数据的现有模式</td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="kb-legend">
+      <div class="d"><span class="b"></span>现有能力</div>
+      <div class="d"><span class="b rust"></span>同义词系统依赖点</div>
+    </div>
+    <div class="notes">后端当前分层还不错。风险不是没有结构，而是数据库迁移机制偏弱。如果现在直接新增同义词表，短期能跑，但上线和多人开发会很容易出现表结构不一致。</div>
+    <div class="kb-footer"><span>Backend Architecture</span><span>04 / 11</span></div>
+  </section>
+
+  <section class="slide">
+    <div class="kb-grid-bg"></div>
+    <div class="kb-kicker">Data Flow</div>
+    <h1 class="kb-h1" style="font-size:44px">当前数据流：<span class="rust">静态词库</span> 与用户进度分离</h1>
+    <svg viewBox="0 0 1200 500" style="width:100%;max-width:1200px;margin-top:18px" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+          <path d="M0,0 L10,5 L0,10 z" fill="#1a1a1a"/>
+        </marker>
+        <marker id="arrow-r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+          <path d="M0,0 L10,5 L0,10 z" fill="#b5392a"/>
+        </marker>
+      </defs>
+      <g font-family="Inter, Noto Sans SC, sans-serif" font-size="15" font-weight="700">
+        <rect x="40" y="170" width="210" height="120" rx="10" fill="#fff" stroke="#1a1a1a" stroke-width="2"/>
+        <text x="145" y="214" text-anchor="middle">vocabulary.js</text>
+        <text x="145" y="244" text-anchor="middle" font-size="12" font-weight="400" fill="#666">静态词库主数据</text>
+
+        <rect x="315" y="145" width="245" height="170" rx="10" fill="#b5392a" stroke="#b5392a" stroke-width="2"/>
+        <text x="438" y="202" text-anchor="middle" fill="#fff" font-size="19">Vue 学习页面</text>
+        <text x="438" y="235" text-anchor="middle" fill="rgba(255,255,255,.85)" font-size="12" font-weight="400">训练 / 搜索 / 重点词</text>
+        <text x="438" y="259" text-anchor="middle" fill="rgba(255,255,255,.85)" font-size="12" font-weight="400">localStorage 临时进度</text>
+
+        <rect x="630" y="170" width="210" height="120" rx="10" fill="#fff" stroke="#1a1a1a" stroke-width="2"/>
+        <text x="735" y="214" text-anchor="middle">FastAPI</text>
+        <text x="735" y="244" text-anchor="middle" font-size="12" font-weight="400" fill="#666">认证 + 同步接口</text>
+
+        <rect x="910" y="170" width="210" height="120" rx="10" fill="#fff" stroke="#1a1a1a" stroke-width="2"/>
+        <text x="1015" y="214" text-anchor="middle">Database</text>
+        <text x="1015" y="244" text-anchor="middle" font-size="12" font-weight="400" fill="#666">用户进度 / 记录</text>
+
+        <line x1="255" y1="230" x2="310" y2="230" stroke="#1a1a1a" stroke-width="2" marker-end="url(#arrow)"/>
+        <line x1="565" y1="230" x2="625" y2="230" stroke="#1a1a1a" stroke-width="2" marker-end="url(#arrow)"/>
+        <line x1="845" y1="230" x2="905" y2="230" stroke="#1a1a1a" stroke-width="2" marker-end="url(#arrow)"/>
+
+        <path d="M 1015 290 Q 1015 395, 438 395 Q 438 330, 438 315" fill="none" stroke="#b5392a" stroke-width="2" stroke-dasharray="7 7" marker-end="url(#arrow-r)"/>
+        <rect x="612" y="374" width="250" height="34" rx="7" fill="#f0eae0" stroke="#b5392a"/>
+        <text x="737" y="397" fill="#b5392a" text-anchor="middle" font-size="12">登录后拉取进度并覆盖本地状态</text>
+      </g>
+    </svg>
+    <div class="kb-card" style="margin-top:8px">
+      <h4>设计结论</h4>
+      <p>第一阶段不要把 3600+ 词库整体迁移到后端。新功能用 word_id + word + chapter_name 关联静态词库，后端只存扩展数据和用户管理数据。</p>
+    </div>
+    <div class="notes">这一页是关键。要解释为什么不建议现在迁移词库。词库迁移会牵动音频路径、前端页面、搜索、练习逻辑。更稳的做法是继续让词库留在前端，把同义词辨析作为扩展表挂上去。</div>
+    <div class="kb-footer"><span>Data Flow</span><span>05 / 11</span></div>
+  </section>
+
+  <section class="slide">
+    <div class="kb-grid-bg"></div>
+    <div class="kb-kicker">Risk Register</div>
+    <h1 class="kb-h1" style="font-size:48px">后续开发前的<span class="rust">阻塞风险</span></h1>
+    <div class="kb-grid-2">
+      <div class="kb-card" style="background:var(--kb-rust-soft);border-color:var(--kb-rust)">
+        <h4>中文编码混乱</h4>
+        <p>README、注释、页面文案、后端接口说明出现乱码。未来同义词标签和中文辨析内容会直接受影响。</p>
+      </div>
+      <div class="kb-card" style="background:var(--kb-rust-soft);border-color:var(--kb-rust)">
+        <h4>API 地址写死</h4>
+        <p>前端直接写死远程地址 http://110.40.139.199:8000，本地、Docker、生产环境切换不可靠。</p>
+      </div>
+      <div class="kb-card" style="background:var(--kb-rust-soft);border-color:var(--kb-rust)">
+        <h4>数据库迁移缺口</h4>
+        <p>当前主要依赖 create_all。新增同义词表、标签表、关联表时，需要 Alembic 管理结构演进。</p>
+      </div>
+      <div class="kb-card" style="background:var(--kb-rust-soft);border-color:var(--kb-rust)">
+        <h4>构建产物混入仓库</h4>
+        <p>dist、node_modules、__pycache__、Cordova platforms 等让源码边界不清，影响评审和维护。</p>
+      </div>
+    </div>
+    <div class="notes">这一页不展开太细，但要让听众理解：这些不是洁癖式重构，而是会直接影响同义词系统的质量。特别是中文乱码和数据库迁移，都是一旦叠加功能后修复成本更高的问题。</div>
+    <div class="kb-footer"><span>Risk Register</span><span>06 / 11</span></div>
+  </section>
+
+  <section class="slide">
+    <div class="kb-grid-bg"></div>
+    <div class="kb-kicker">Foundation Work</div>
+    <h1 class="kb-h1" style="font-size:48px">先做<span class="rust">地基优化</span>，再做业务功能</h1>
+    <div class="kb-pipeline">
+      <div class="kb-step hero">
+        <div class="kb-step-num">P0</div>
+        <div class="kb-step-title">编码修复</div>
+        <div class="kb-step-body">统一 UTF-8，修复中文文案、注释、接口描述、数据库中文读写。</div>
+      </div>
+      <div class="kb-step">
+        <div class="kb-step-num">P0</div>
+        <div class="kb-step-title">环境配置</div>
+        <div class="kb-step-body">API_BASE_URL 改为 .env，区分本地、Docker、生产。</div>
+      </div>
+      <div class="kb-step">
+        <div class="kb-step-num">P1</div>
+        <div class="kb-step-title">迁移机制</div>
+        <div class="kb-step-body">引入 Alembic baseline，后续表结构全部走 migration。</div>
+      </div>
+      <div class="kb-step">
+        <div class="kb-step-num">P1</div>
+        <div class="kb-step-title">仓库清理</div>
+        <div class="kb-step-body">完善 .gitignore，明确源码、依赖、构建产物和运行时数据。</div>
+      </div>
+    </div>
+    <div class="kb-grid-2" style="margin-top:18px">
+      <div class="kb-card">
+        <h4>前端结构优化</h4>
+        <p>拆分词汇主页面：WordCard、ChapterFilter、TrainingControls、useVocabularyProgress、useWordAudio。</p>
+      </div>
+      <div class="kb-card">
+        <h4>测试基线</h4>
+        <p>补后端认证和进度同步测试；补前端搜索、API 封装、词汇组件基础测试。</p>
+      </div>
+    </div>
+    <div class="notes">这一页给出明确顺序。P0 是必须先做，P1 是强烈建议在同义词系统开工前做。前端拆分和测试可以和早期功能设计并行，但不应该被无限推后。</div>
+    <div class="kb-footer"><span>Foundation Work</span><span>07 / 11</span></div>
+  </section>
+
+  <section class="slide">
+    <div class="kb-grid-bg"></div>
+    <div class="kb-kicker">Target Feature</div>
+    <h1 class="kb-h1" style="font-size:48px">同义词辨析系统的<span class="rust">目标架构</span></h1>
+    <div class="kb-grid-3">
+      <div class="kb-card">
+        <h4>SynonymSet</h4>
+        <p>辨析组主表：标题、说明、章节、来源、是否公开、归属用户。</p>
+      </div>
+      <div class="kb-card">
+        <h4>SynonymWord</h4>
+        <p>组内单词行：word_id、word、词性、核心动作特点、短语、英文释义、例句、排序。</p>
+      </div>
+      <div class="kb-card">
+        <h4>SynonymTag</h4>
+        <p>标签系统：写作替换、阅读同义替换、环境、动作、变化、程度等。</p>
+      </div>
+    </div>
+    <table class="kb-table">
+      <thead>
+        <tr>
+          <th>页面入口</th>
+          <th>用户动作</th>
+          <th>后端依赖</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>词汇主页面</td>
+          <td>看到标签，点击“辨析”</td>
+          <td>批量 lookup 当前页 word_id</td>
+        </tr>
+        <tr>
+          <td>搜索结果页</td>
+          <td>从搜索结果跳转辨析表</td>
+          <td>按 word 或 word_id 查关联组</td>
+        </tr>
+        <tr>
+          <td>管理页面</td>
+          <td>创建、编辑、删除辨析组</td>
+          <td>Synonym CRUD + 标签 CRUD</td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="notes">这里开始承接用户最初的需求。强调表结构不是为了复杂，而是为了让内容可管理、可扩展。第一版重点是用户私有管理和展示，不急着做公开市场或复杂权限。</div>
+    <div class="kb-footer"><span>Target Feature</span><span>08 / 11</span></div>
+  </section>
+
+  <section class="slide">
+    <div class="kb-grid-bg"></div>
+    <div class="kb-kicker">API Blueprint</div>
+    <h1 class="kb-h1" style="font-size:48px">接口设计要避免<span class="rust">逐词请求</span></h1>
+    <pre class="kb-codebox"><span class="cm"># Synonym management</span>
+<span class="kw">GET</span>    <span class="st">/api/synonyms</span>
+<span class="kw">GET</span>    <span class="st">/api/synonyms/{set_id}</span>
+<span class="kw">POST</span>   <span class="st">/api/synonyms</span>
+<span class="kw">PUT</span>    <span class="st">/api/synonyms/{set_id}</span>
+<span class="kw">DELETE</span> <span class="st">/api/synonyms/{set_id}</span>
+
+<span class="cm"># Word relation lookup</span>
+<span class="kw">POST</span>   <span class="st">/api/synonyms/lookup</span>
+body: { <span class="hl">word_ids</span>: [72, 73, 74], words: ["deteriorate"] }
+
+<span class="cm"># Import for batch authoring</span>
+<span class="kw">POST</span>   <span class="st">/api/synonyms/import</span>
+body: [{ title, tags, rows: [{ word, core_feature, phrases, definitions, examples }] }]</pre>
+    <div class="kb-grid-2">
+      <div class="kb-card">
+        <h4>为什么要 lookup 批量接口</h4>
+        <p>词汇页一屏可能有几十个单词，如果逐个请求，会让页面变慢，也会给后端制造不必要压力。</p>
+      </div>
+      <div class="kb-card">
+        <h4>为什么要 import 接口</h4>
+        <p>同义词辨析的内容生产量远大于代码量。没有导入能力，后续维护会被手工录入拖慢。</p>
+      </div>
+    </div>
+    <div class="notes">这一页讲 API 关键取舍。不要为了方便在前端循环请求。也要提前支持导入，因为同义词辨析是内容密集型功能，单纯页面手填会很痛苦。</div>
+    <div class="kb-footer"><span>API Blueprint</span><span>09 / 11</span></div>
+  </section>
+
+  <section class="slide">
+    <div class="kb-grid-bg"></div>
+    <div class="kb-kicker">Roadmap</div>
+    <h1 class="kb-h1" style="font-size:48px">建议按<span class="rust">两阶段</span>推进</h1>
+    <table class="kb-table">
+      <thead>
+        <tr>
+          <th>阶段</th>
+          <th>目标</th>
+          <th>交付物</th>
+          <th>预计时长</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Phase 0</td>
+          <td>项目地基优化</td>
+          <td>编码修复、环境变量、Alembic、仓库清理、词汇页拆分计划</td>
+          <td>3 到 5 天</td>
+        </tr>
+        <tr>
+          <td>Phase 1</td>
+          <td>同义词系统 MVP</td>
+          <td>后端表/API、展示页、管理页、词汇入口、JSON 导入</td>
+          <td>7 到 11 天</td>
+        </tr>
+        <tr>
+          <td>Phase 2</td>
+          <td>增强体验</td>
+          <td>批量编辑、导出、公开共享、更多筛选、内容质量流程</td>
+          <td>按需求拆分</td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="kb-card" style="margin-top:18px;background:var(--kb-rust-soft);border-color:var(--kb-rust)">
+      <h4>验收标准</h4>
+      <p>第一版完成时，用户能创建辨析组、添加多个单词、打标签、查看对比表，并能从词汇页或搜索页直接跳转，刷新后数据不丢失。</p>
+    </div>
+    <div class="notes">这里给出可执行排期。Phase 0 是为了降低返工，Phase 1 才是功能开发。不要把 Phase 2 的增强体验混入第一版，否则范围会膨胀。</div>
+    <div class="kb-footer"><span>Roadmap</span><span>10 / 11</span></div>
+  </section>
+
+  <section class="slide">
+    <div class="kb-grid-bg"></div>
+    <div style="margin:auto 0;text-align:center">
+      <div class="kb-kicker">Decision</div>
+      <h1 class="kb-h1" style="font-size:88px">先稳住<span class="rust">地基</span><br>再扩展<span class="rust">知识层</span></h1>
+      <p class="kb-sub" style="font-size:22px;margin:20px auto 0;max-width:820px">My IELTS 的下一步不是简单新增页面，而是把“学习资料、用户进度、内容管理、长期维护”这四件事的边界理顺。这样同义词辨析系统才不会成为新的技术债。</p>
+      <div style="margin-top:28px">
+        <span class="kb-tag">UTF-8</span>
+        <span class="kb-tag">ENV CONFIG</span>
+        <span class="kb-tag">ALEMBIC</span>
+        <span class="kb-tag">COMPONENT SPLIT</span>
+        <span class="kb-tag">SYNONYM SETS</span>
+      </div>
+    </div>
+    <div class="notes">结尾强调决策。最好的路径不是马上开写同义词系统，而是先用几天把地基整理好。这样后续功能会更快、更稳，也更容易长期维护。</div>
+    <div class="kb-footer"><span>End of Deck</span><span>11 / 11</span></div>
+  </section>
+
+</div>
+<script src="assets/runtime.js"></script>
+</body>
+</html>
