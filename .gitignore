@@ -7,3 +7,6 @@ node_modules/
 dist/
 my-ielts-app/
 .DS_Store
+frontend/public/179_audios/
+frontend/public/vocabulary/
+frontend/asset-packages/public-assets.zip

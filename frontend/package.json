@@ -2,6 +2,7 @@
   "private": true,
   "packageManager": "pnpm@8.6.0",
   "scripts": {
+    "assets:restore": "node scripts/restore-assets.mjs",
     "build": "vite build",
     "build:docker": "vite build --mode docker",
     "build:local": "vite build --mode development",
